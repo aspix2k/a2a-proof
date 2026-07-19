@@ -191,7 +191,13 @@ def test_resolves_single_turn_structured_input() -> None:
     assert scenario.resolved_turns()[0].model_dump() == {
         "message": "Create order",
         "data": [{"order_id": "order-42"}],
-        "expect": {"state": None, "text": None, "data": [], "max_seconds": None},
+        "expect": {
+            "state": None,
+            "text": None,
+            "data": [],
+            "max_seconds": None,
+            "max_first_event_seconds": None,
+        },
     }
 
 
@@ -211,6 +217,56 @@ scenarios: [{name: data, data: {value: "${VALUE}"}}]
 
     with pytest.raises(ConfigError, match="input data exceeds 10 bytes"):
         load_config(path, {"VALUE": "expanded value"})
+
+
+def test_validates_structured_data_assertion_shape() -> None:
+    with pytest.raises(ValueError, match="at least one assertion"):
+        models_module.DataExpectation()
+    with pytest.raises(ValueError, match="one assertion type"):
+        models_module.DataExpectation(equals=1, gt=0)
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.DataExpectation(exists=None)
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.DataExpectation(matches=None)
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.DataExpectation(json_schema=None)
+    with pytest.raises(ValueError, match="non-empty path"):
+        models_module.DataExpectation(exists=False)
+
+    assert models_module.DataExpectation(equals=None).model_fields_set == {"equals"}
+
+
+@pytest.mark.parametrize("value", [True, "1"])
+def test_rejects_non_numeric_comparison_values(value: object) -> None:
+    with pytest.raises(ValueError, match="numeric comparisons require a number"):
+        models_module.DataExpectation.model_validate({"gt": value})
+
+
+def test_validates_data_regular_expression() -> None:
+    with pytest.raises(ValueError, match="invalid regular expression"):
+        models_module.DataExpectation(matches="[")
+
+
+def test_validates_embedded_json_schema_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    models_module.DataExpectation(json_schema={"type": "object"})
+
+    with pytest.raises(ValueError, match="invalid JSON Schema"):
+        models_module.DataExpectation(json_schema={"type": "not-a-type"})
+    with pytest.raises(ValueError, match="references must be local"):
+        models_module.DataExpectation(json_schema={"$ref": "https://example.com/schema.json"})
+
+    monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_BYTES", 10)
+    with pytest.raises(ValueError, match="json_schema exceeds 10 bytes"):
+        models_module.DataExpectation(json_schema={"type": "object"})
+
+
+def test_rejects_excessively_deep_embedded_json_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_DEPTH", 2)
+
+    with pytest.raises(ValueError, match="json_schema exceeds 2 levels"):
+        models_module.DataExpectation(json_schema={"properties": {"value": {"type": "string"}}})
 
 
 def test_parses_legacy_extension_parameter() -> None:
@@ -323,7 +379,7 @@ scenarios:
 
     expectation = load_config(path).scenarios[0].expect.data[0]
 
-    assert expectation.model_dump() == {
+    assert expectation.model_dump(exclude_none=True) == {
         "equals": "Paris",
         "path": "/city",
         "source": "artifact",
@@ -586,10 +642,16 @@ def test_write_config_is_safe_by_default(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="already exists"):
         write_config(path, {"version": 2})
 
-    assert path.read_text(encoding="utf-8") == "zeta: Проверка\nalpha: 1\n"
+    assert path.read_text(encoding="utf-8") == (
+        f"# yaml-language-server: $schema={config_module.CONFIG_SCHEMA_URL}\n\n"
+        "zeta: Проверка\n"
+        "alpha: 1\n"
+    )
 
     write_config(path, {"version": 2}, force=True)
-    assert path.read_text(encoding="utf-8") == "version: 2\n"
+    assert path.read_text(encoding="utf-8") == (
+        f"# yaml-language-server: $schema={config_module.CONFIG_SCHEMA_URL}\n\nversion: 2\n"
+    )
 
 
 def test_write_config_requires_existing_parent(tmp_path: Path) -> None:

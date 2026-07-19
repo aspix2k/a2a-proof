@@ -28,6 +28,7 @@ jobs:
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ty check
+      - run: uv run --frozen python scripts/generate_schema.py --check
       - run: uv run --frozen zizmor --persona=pedantic --offline --strict-collection .
       - run: uv run --frozen pytest --cov=a2a_proof --cov-report=term-missing
       - run: uv run --frozen a2a-proof check examples/official-helloworld.yaml

@@ -7,6 +7,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-19
+
+### Features
+
+- Made releases installable from PyPI with `uvx a2a-proof` through tokenless Trusted Publishing.
+- Published a machine-readable configuration schema and made `init` attach it for editor
+  completion and inline validation.
+- Added structured-data assertions for presence, bounded regular expressions, numeric ranges, and
+  inline JSON Schema Draft 2020-12 documents.
+- Added `--scenario` filtering for focused local and CI runs. Multiple exact names can be selected
+  without changing configuration order.
+- Added `max_first_event_seconds` for bounding the first A2A response event independently from
+  total turn duration.
+
+### Security
+
+- Rejected external references in embedded JSON Schemas and bounded each schema to 100 KB and 50
+  levels.
+- Kept structured-data regular expressions under the same 100 ms evaluation limit as text
+  assertions.
+
+### Maintenance
+
+- Made CI reject a committed configuration schema that has drifted from the Pydantic models.
+
+### Documentation
+
+- Documented editor integration, every structured-data assertion, focused scenario execution, and
+  first-event latency semantics.
+
 ## 0.3.0 - 2026-07-19
 
 ### Features

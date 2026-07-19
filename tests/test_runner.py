@@ -269,6 +269,7 @@ async def test_preserves_structured_data_in_turn_results() -> None:
             str(context["context_id"]),
             1,
             (part,),
+            first_event_ms=2,
         )
 
     result = await run_with_sender(
@@ -285,7 +286,9 @@ async def test_preserves_structured_data_in_turn_results() -> None:
     )
 
     assert result.passed
-    assert result.scenarios[0].trials[0].turns[0].data == [part]
+    turn = result.scenarios[0].trials[0].turns[0]
+    assert turn.data == [part]
+    assert turn.first_event_ms == 2
 
 
 @pytest.mark.asyncio

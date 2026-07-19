@@ -71,6 +71,7 @@ async def _run_trial(index: int, scenario: Scenario, send_turn: SendTurn) -> Tri
                     passed=not failures,
                     state=outcome.state,
                     duration_ms=outcome.duration_ms,
+                    first_event_ms=outcome.first_event_ms,
                     text=outcome.text,
                     data=list(outcome.data),
                     failures=failures,

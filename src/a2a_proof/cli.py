@@ -13,7 +13,7 @@ from rich.console import Console
 
 from a2a_proof.a2a import discover_agent
 from a2a_proof.config import ConfigError, load_config, write_config
-from a2a_proof.models import AgentConfig, ProofConfig
+from a2a_proof.models import AgentConfig, ProofConfig, Scenario
 from a2a_proof.reporting import render_json, render_junit, render_terminal
 from a2a_proof.runner import run
 
@@ -135,17 +135,29 @@ def check_command(config_path: Path) -> None:
 )
 @click.option("--output", "-o", type=click.Path(path_type=Path, dir_okay=False))
 @click.option("--verbose", "-v", is_flag=True, help="Show failed agent responses.")
+@click.option(
+    "scenario_names",
+    "--scenario",
+    multiple=True,
+    metavar="NAME",
+    help="Run only this scenario. Repeat to select more than one.",
+)
 def run_command(
     config_path: Path,
     output_format: str,
     output: Path | None,
     verbose: bool,
+    scenario_names: tuple[str, ...],
 ) -> None:
     """Run the configured scenarios against the agent."""
     if output is not None and output_format == "terminal":
         raise click.UsageError("--output requires --format json or junit")
     try:
         config = load_config(config_path)
+        if scenario_names:
+            config = config.model_copy(
+                update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
+            )
         result = asyncio.run(run(config))
     except (A2AClientError, ConfigError, OSError, RuntimeError) as error:
         raise ProofCommandError(str(error)) from error
@@ -214,3 +226,15 @@ def _unique_name(base: str, used: set[str]) -> str:
 
 def _scenario_count(count: int) -> str:
     return f"{count} scenario{'s' if count != 1 else ''}"
+
+
+def _select_scenarios(
+    scenarios: list[Scenario],
+    names: tuple[str, ...],
+) -> list[Scenario]:
+    requested = set(names)
+    missing = sorted(requested - {scenario.name for scenario in scenarios})
+    if missing:
+        label = "scenario" if len(missing) == 1 else "scenarios"
+        raise ProofCommandError(f"unknown {label}: {', '.join(missing)}")
+    return [scenario for scenario in scenarios if scenario.name in requested]

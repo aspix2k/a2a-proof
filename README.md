@@ -3,6 +3,7 @@
 [![CI](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml/badge.svg)](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A599%25-brightgreen)](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/aspix2k/a2a-proof)](https://github.com/aspix2k/a2a-proof/releases)
+[![PyPI](https://img.shields.io/pypi/v/a2a-proof)](https://pypi.org/project/a2a-proof/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 
 Black-box contract tests for A2A agents.
@@ -26,9 +27,8 @@ A2A 1.0 and supports JSON-RPC, HTTP+JSON, and gRPC.
 ## Quick start
 
 ```console
-uv tool install git+https://github.com/aspix2k/a2a-proof@v0.3.0
-a2a-proof init https://agent.example.com
-a2a-proof run
+uvx a2a-proof init https://agent.example.com
+uvx a2a-proof run
 ```
 
 `init` reads the Agent Card and creates `a2a-proof.yaml`. If a skill contains examples,
@@ -38,6 +38,8 @@ scenarios verify protocol success. Add the assertions you care about before usin
 ## Configuration
 
 ```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json
+
 version: 1
 
 agent:
@@ -55,6 +57,7 @@ scenarios:
     expect:
       state: completed
       max_seconds: 10
+      max_first_event_seconds: 2
       text:
         contains: Paris
         not_contains: error
@@ -92,7 +95,19 @@ scenarios:
           path: /city
           equals: Paris
         - path: /temperature
-          equals: 21
+          gte: 18
+          lt: 30
+        - path: /summary
+          matches: "(?i)sunny|cloudy"
+        - path: /alerts
+          exists: true
+        - path: /forecast
+          json_schema:
+            type: object
+            required: [date, conditions]
+            properties:
+              date: {type: string}
+              conditions: {type: string}
 ```
 
 Each scenario uses a single turn or `turns`. A turn may contain `message`, `data`, or both. A mapping
@@ -103,12 +118,30 @@ Text assertions support `contains`, `not_contains`, `equals`, and Python regular
 `matches`. Strings are case-sensitive unless `case_sensitive: false` is set. Failed, rejected,
 and canceled tasks fail by default unless that state is explicitly expected.
 
+`max_seconds` bounds the complete turn. `max_first_event_seconds` bounds the time until the first
+A2A response event observed by the client, which is useful for streaming responsiveness checks.
+
 `trials` repeats a scenario. `pass_rate` is the minimum successful fraction and defaults to `1`.
 
 Structured assertions inspect A2A `data` parts from messages or artifacts. `path` is an
 [RFC 6901 JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901); an empty path checks the complete
 JSON value. Each assertion must match at least one data part after the optional source, artifact
-name, and media type filters are applied.
+name, and media type filters are applied. Use exactly one assertion type per entry:
+
+- `equals` compares JSON values without treating booleans as numbers.
+- `exists` checks whether a non-root pointer is present or absent.
+- `matches` applies a bounded regular expression to string values.
+- `gt`, `gte`, `lt`, and `lte` define one or more numeric bounds.
+- `json_schema` validates a value against an inline JSON Schema Draft 2020-12 document.
+
+Embedded schemas may use local references such as `#/$defs/item`; external references are rejected
+and never fetched.
+
+## Editor support
+
+The published [configuration schema](schema/a2a-proof.schema.json) provides completion and inline
+validation in editors that support YAML language-server schema comments. `init` writes the comment
+automatically. For an existing file, add the first line shown in the configuration example above.
 
 ## Output
 
@@ -203,7 +236,12 @@ a2a-proof run [CONFIG]
 a2a-proof run --format json
 a2a-proof run --format junit --output a2a-proof.xml
 a2a-proof run --verbose
+a2a-proof run --scenario "capital of France"
+a2a-proof run --scenario smoke --scenario regression
 ```
+
+`--scenario` is repeatable and runs exact, case-sensitive scenario names in configuration order.
+Unknown names fail before connecting to the agent.
 
 Exit code `0` means all scenarios passed, `1` means a contract failed, and `2` means the command
 or configuration could not be executed. JUnit output is suitable for CI test reports.
@@ -213,9 +251,10 @@ or configuration could not be executed. JUnit output is suitable for CI test rep
 Per turn, outgoing structured input is limited to 100 parts and 1 MB. Responses are limited to
 1,000 stream events, 1,000 structured data parts, and 1 MB each of text, structured data, and inline
 raw data. At most 20 extension URIs and 8,000 extension-header characters may be configured.
-Requests have a configurable timeout, regular-expression checks have a 100 ms evaluation limit,
-HTTP redirects are disabled, and artifact URLs are never fetched. Treat the tested agent and all
-returned content as untrusted input.
+Embedded JSON Schemas are limited to 100 KB and 50 levels. Requests have a configurable timeout,
+text and data `matches` checks have a 100 ms evaluation limit, HTTP redirects are disabled,
+external schema references are rejected, and artifact URLs are never fetched. Treat the tested
+agent and all returned content as untrusted input.
 
 ## Development
 
@@ -226,6 +265,7 @@ uv sync --all-groups
 uv run ruff format --check .
 uv run ruff check .
 uv run ty check
+uv run python scripts/generate_schema.py --check
 uv run zizmor --persona=pedantic --offline --strict-collection .
 uv run pytest --cov=a2a_proof
 uv run mutmut run --max-children 1

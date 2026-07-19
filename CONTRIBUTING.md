@@ -17,6 +17,7 @@ Before opening a pull request, run:
 uv run ruff format --check .
 uv run ruff check .
 uv run ty check
+uv run python scripts/generate_schema.py --check
 uv run zizmor --persona=pedantic --offline --strict-collection .
 uv run pytest --cov=a2a_proof
 uv build
@@ -39,5 +40,5 @@ Update the version in `pyproject.toml`, refresh `uv.lock`, and move the changelo
 `Maintenance` sections. Order sections and their entries from highest to lowest user impact; do
 not use generated commit lists or vague summaries. After CI passes on `main`, create and push the
 matching `vX.Y.Z` tag. The release workflow requires that version's changelog section, rebuilds
-and tests the package, verifies the tag version, records build provenance, and publishes immutable
-GitHub release assets. Never move or reuse a release tag.
+and tests the package, verifies the tag version, publishes through PyPI Trusted Publishing, records
+build provenance, and publishes immutable GitHub release assets. Never move or reuse a release tag.

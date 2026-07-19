@@ -79,6 +79,7 @@ def test_init_writes_environment_reference_without_secret(
 
     content = output.read_text(encoding="utf-8")
     assert result.exit_code == 0
+    assert content.startswith("# yaml-language-server: $schema=https://")
     assert "${A2A_AUTH}" in content
     assert "Bearer secret" not in content
     assert "Weather in Moscow?" in content
@@ -314,6 +315,51 @@ def test_run_writes_junit_file(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert output.read_text(encoding="utf-8").startswith("<?xml version='1.0'")
+
+
+def test_run_selects_named_scenarios_in_configuration_order(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - {name: first, message: One}
+  - {name: second, message: Two}
+  - {name: third, message: Three}
+""",
+        encoding="utf-8",
+    )
+    selected: list[str] = []
+
+    async def run(config):
+        selected.extend(scenario.name for scenario in config.scenarios)
+        return SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(
+        main,
+        ["run", str(path), "--scenario", "third", "--scenario", "first"],
+    )
+
+    assert result.exit_code == 0
+    assert selected == ["first", "third"]
+
+
+def test_run_rejects_unknown_scenario_before_connecting(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+
+    async def run(config):
+        raise AssertionError("runner must not start")
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(main, ["run", str(path), "--scenario", "missing"])
+
+    assert result.exit_code == 2
+    assert result.output == "Error: unknown scenario: missing\n"
 
 
 def test_run_reports_execution_and_output_errors(tmp_path: Path, monkeypatch) -> None:

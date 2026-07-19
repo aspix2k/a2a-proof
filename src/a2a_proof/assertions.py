@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 import regex
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import best_match
 from pydantic import JsonValue
 
 from a2a_proof.models import DataExpectation, DataPartResult, Expectation, TextExpectation
@@ -33,6 +35,17 @@ def evaluate(expectation: Expectation, outcome: TurnOutcome) -> list[str]:
         if actual_seconds > expectation.max_seconds:
             failures.append(
                 f"expected at most {expectation.max_seconds:g}s, got {actual_seconds:.3f}s"
+            )
+    if expectation.max_first_event_seconds is not None:
+        first_event_seconds = (
+            outcome.first_event_ms / 1_000 if outcome.first_event_ms is not None else None
+        )
+        if first_event_seconds is None:
+            failures.append("agent returned no first-event timing")
+        elif first_event_seconds > expectation.max_first_event_seconds:
+            failures.append(
+                f"expected first event within {expectation.max_first_event_seconds:g}s, "
+                f"got {first_event_seconds:.3f}s"
             )
     if expectation.text is not None:
         failures.extend(_evaluate_text(expectation.text, outcome.text))
@@ -81,26 +94,132 @@ def _evaluate_data(
     failures: list[str] = []
     for expectation in expectations:
         candidates = [part for part in parts if _matches_location(expectation, part)]
-        if not candidates:
-            failures.append(f"no structured data matched {_location(expectation)}")
-            continue
-        values = [_resolve_pointer(part.value, expectation.path) for part in candidates]
-        if any(
-            not isinstance(value, _Missing) and _json_equal(value, expectation.equals)
-            for value in values
-        ):
-            continue
-        location = expectation.path or "<root>"
-        present = [value for value in values if not isinstance(value, _Missing)]
-        if not present:
-            failures.append(f"structured data path {location!r} was not found")
-            continue
-        actual = ", ".join(_json_preview(value) for value in present[:3])
-        failures.append(
+        failure = _evaluate_data_expectation(expectation, candidates)
+        if failure is not None:
+            failures.append(failure)
+    return failures
+
+
+def _evaluate_data_expectation(
+    expectation: DataExpectation,
+    candidates: list[DataPartResult],
+) -> str | None:
+    if not candidates:
+        return f"no structured data matched {_location(expectation)}"
+    values = [_resolve_pointer(part.value, expectation.path) for part in candidates]
+    location = expectation.path or "<root>"
+    present = [value for value in values if not isinstance(value, _Missing)]
+    actual = ", ".join(_json_preview(value) for value in present[:3])
+
+    if expectation.exists is not None:
+        return _existence_failure(expectation.exists, location, present, actual)
+    if not present:
+        return f"structured data path {location!r} was not found"
+    return _data_predicate_failure(expectation, location, present, actual)
+
+
+def _existence_failure(
+    expected: bool,
+    location: str,
+    values: list[JsonValue],
+    actual: str,
+) -> str | None:
+    if bool(values) == expected:
+        return None
+    if expected:
+        return f"structured data path {location!r} was not found"
+    return f"expected structured data path {location!r} to be absent, got {actual}"
+
+
+def _data_predicate_failure(
+    expectation: DataExpectation,
+    location: str,
+    values: list[JsonValue],
+    actual: str,
+) -> str | None:
+    if "equals" in expectation.model_fields_set:
+        if any(_json_equal(value, expectation.equals) for value in values):
+            return None
+        return (
             f"expected structured data at {location!r} to equal "
             f"{_json_preview(expectation.equals)}, got {actual}"
         )
-    return failures
+    if expectation.matches is not None:
+        return _data_pattern_failure(expectation.matches, location, values, actual)
+    if expectation.json_schema is not None:
+        schema_error = _json_schema_error(expectation.json_schema, values)
+        return (
+            None
+            if schema_error is None
+            else f"structured data at {location!r} does not match JSON Schema: {schema_error}"
+        )
+    if any(_matches_numeric_bounds(expectation, value) for value in values):
+        return None
+    return (
+        f"expected structured data at {location!r} to be "
+        f"{_numeric_bounds(expectation)}, got {actual}"
+    )
+
+
+def _data_pattern_failure(
+    pattern: str,
+    location: str,
+    values: list[JsonValue],
+    actual: str,
+) -> str | None:
+    result = _matches_pattern(pattern, values)
+    if result is True:
+        return None
+    if result is None:
+        return f"regular expression /{pattern}/ timed out"
+    return f"expected structured data at {location!r} to match /{pattern}/, got {actual}"
+
+
+def _matches_pattern(pattern: str, values: list[JsonValue]) -> bool | None:
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            if regex.search(pattern, value, timeout=REGEX_TIMEOUT_SECONDS) is not None:
+                return True
+        except TimeoutError:
+            return None
+    return False
+
+
+def _json_schema_error(
+    schema: dict[str, JsonValue] | bool,
+    values: list[JsonValue],
+) -> str | None:
+    validator = Draft202012Validator(schema)
+    first, *remaining = values
+    first_error = best_match(validator.iter_errors(first))
+    if first_error is None:
+        return None
+    if any(best_match(validator.iter_errors(value)) is None for value in remaining):
+        return None
+    return _bounded_text(first_error.message)
+
+
+def _matches_numeric_bounds(expectation: DataExpectation, value: JsonValue) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return (
+        (expectation.gt is None or value > expectation.gt)
+        and (expectation.gte is None or value >= expectation.gte)
+        and (expectation.lt is None or value < expectation.lt)
+        and (expectation.lte is None or value <= expectation.lte)
+    )
+
+
+def _numeric_bounds(expectation: DataExpectation) -> str:
+    bounds = (
+        (">", expectation.gt),
+        (">=", expectation.gte),
+        ("<", expectation.lt),
+        ("<=", expectation.lte),
+    )
+    return " and ".join(f"{operator} {value:g}" for operator, value in bounds if value is not None)
 
 
 def _matches_location(expectation: DataExpectation, part: DataPartResult) -> bool:
@@ -166,4 +285,8 @@ def _json_equal(actual: JsonValue, expected: JsonValue) -> bool:
 
 def _json_preview(value: JsonValue) -> str:
     rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return rendered if len(rendered) <= JSON_PREVIEW_CHARS else f"{rendered[:JSON_PREVIEW_CHARS]}…"
+    return _bounded_text(rendered)
+
+
+def _bounded_text(value: str) -> str:
+    return value if len(value) <= JSON_PREVIEW_CHARS else f"{value[:JSON_PREVIEW_CHARS]}…"
