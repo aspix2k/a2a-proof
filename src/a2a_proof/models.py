@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal, Self, cast
 
 import regex
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 NonEmptyText = Annotated[str, Field(min_length=1, max_length=100_000)]
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class TextExpectation(StrictModel):
@@ -35,10 +44,37 @@ class TextExpectation(StrictModel):
         return patterns
 
 
+class DataExpectation(StrictModel):
+    equals: JsonValue
+    path: Annotated[str, Field(max_length=1_000)] = ""
+    source: Literal["message", "artifact"] | None = None
+    artifact_name: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    media_type: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+
+    @field_validator("path")
+    @classmethod
+    def validate_json_pointer(cls, path: str) -> str:
+        if not re.fullmatch(r"(?:/(?:[^~]|~[01])*)*", path):
+            raise ValueError("path must be an RFC 6901 JSON Pointer")
+        return path
+
+    @model_validator(mode="after")
+    def validate_source(self) -> Self:
+        if self.source == "message" and self.artifact_name is not None:
+            raise ValueError("artifact_name cannot be used with source: message")
+        return self
+
+
 class Expectation(StrictModel):
     state: str | None = Field(default=None, min_length=1, max_length=64)
     text: TextExpectation | None = None
+    data: list[DataExpectation] = Field(default_factory=list, max_length=100)
     max_seconds: float | None = Field(default=None, gt=0, le=600)
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def accept_single_data_expectation(cls, value: object) -> object:
+        return [value] if isinstance(value, (dict, DataExpectation)) else value
 
 
 class Turn(StrictModel):
@@ -115,12 +151,21 @@ class ProofConfig(StrictModel):
         return scenarios
 
 
+class DataPartResult(StrictModel):
+    source: Literal["message", "artifact"]
+    value: JsonValue
+    media_type: str | None = None
+    artifact_id: str | None = None
+    artifact_name: str | None = None
+
+
 class TurnResult(StrictModel):
     index: int
     passed: bool
     state: str
     duration_ms: int
     text: str
+    data: list[DataPartResult] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
 
 

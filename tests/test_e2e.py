@@ -69,14 +69,35 @@ class _AgentHandler(BaseHTTPRequestHandler):
         payload = request["params"] if self.path == "/a2a" else request
         message = payload["message"]
         text = "".join(part.get("text", "") for part in message["parts"])
-        result = {
-            "message": {
-                "messageId": "response",
-                "contextId": message["contextId"],
-                "role": "ROLE_AGENT",
-                "parts": [{"text": f"echo: {text}"}],
+        if text == "structured":
+            result = {
+                "task": {
+                    "id": "task",
+                    "contextId": message["contextId"],
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                    "artifacts": [
+                        {
+                            "artifactId": "result",
+                            "name": "forecast",
+                            "parts": [
+                                {
+                                    "data": {"city": "Paris", "temperature": 21},
+                                    "mediaType": "application/json",
+                                }
+                            ],
+                        }
+                    ],
+                }
             }
-        }
+        else:
+            result = {
+                "message": {
+                    "messageId": "response",
+                    "contextId": message["contextId"],
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": f"echo: {text}"}],
+                }
+            }
         if self.path == "/a2a":
             result = {"jsonrpc": "2.0", "id": request["id"], "result": result}
         self._send_json(200, result)
@@ -169,6 +190,42 @@ async def test_runs_real_http_json_exchange(agent_url: str) -> None:
     )
 
     assert (await run(config)).passed
+
+
+@pytest.mark.asyncio
+async def test_runs_structured_artifact_contract_over_real_jsonrpc(agent_url: str) -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": agent_url},
+            "scenarios": [
+                {
+                    "name": "forecast",
+                    "message": "structured",
+                    "expect": {
+                        "state": "completed",
+                        "data": [
+                            {
+                                "source": "artifact",
+                                "artifact_name": "forecast",
+                                "media_type": "application/json",
+                                "path": "/city",
+                                "equals": "Paris",
+                            },
+                            {"path": "/temperature", "equals": 21},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    result = await run(config)
+
+    assert result.passed
+    data = result.scenarios[0].trials[0].turns[0].data
+    assert data[0].value == {"city": "Paris", "temperature": 21.0}
+    assert data[0].artifact_id == "result"
 
 
 @pytest.mark.asyncio

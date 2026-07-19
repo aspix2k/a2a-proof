@@ -10,7 +10,7 @@ import pytest
 import respx
 from a2a.client.client import Client, ClientCallContext
 from a2a.client.errors import AgentCardResolutionError
-from a2a.helpers import get_message_text
+from a2a.helpers import get_message_text, new_data_artifact, new_data_message, new_data_part
 from a2a.types import (
     AgentCard,
     AgentInterface,
@@ -313,6 +313,97 @@ def test_keeps_distinct_artifacts_and_accepts_an_initial_append() -> None:
     assert appended.finish(duration_ms=1).text == "tail"
 
 
+def test_collects_structured_message_and_artifact_data() -> None:
+    collector = ResponseCollector("context")
+    message = new_data_message({"phase": "working"}, media_type="application/json")
+    message.message_id = "progress"
+    collector.add(StreamResponse(message=message))
+    collector.add(
+        StreamResponse(
+            task=Task(
+                id="task",
+                context_id="context",
+                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+                artifacts=[
+                    new_data_artifact(
+                        "forecast",
+                        {"city": "Paris", "temperature": 21},
+                        media_type="application/json",
+                        artifact_id="result",
+                    )
+                ],
+            )
+        )
+    )
+
+    outcome = collector.finish(duration_ms=1)
+
+    assert [part.model_dump() for part in outcome.data] == [
+        {
+            "source": "message",
+            "value": {"phase": "working"},
+            "media_type": "application/json",
+            "artifact_id": None,
+            "artifact_name": None,
+        },
+        {
+            "source": "artifact",
+            "value": {"city": "Paris", "temperature": 21.0},
+            "media_type": "application/json",
+            "artifact_id": "result",
+            "artifact_name": "forecast",
+        },
+    ]
+
+
+def test_appends_and_replaces_structured_artifact_parts() -> None:
+    collector = ResponseCollector("context")
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=new_data_artifact(
+                    "result",
+                    {"chunk": 1},
+                    artifact_id="result",
+                )
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=Artifact(
+                    artifact_id="result",
+                    parts=[new_data_part({"chunk": 2})],
+                ),
+                append=True,
+            )
+        )
+    )
+
+    data = collector.finish(duration_ms=1).data
+    assert [part.value for part in data] == [
+        {"chunk": 1.0},
+        {"chunk": 2.0},
+    ]
+    assert [part.artifact_name for part in data] == ["result", "result"]
+
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=new_data_artifact(
+                    "replacement",
+                    {"chunk": 3},
+                    artifact_id="result",
+                )
+            )
+        )
+    )
+    outcome = collector.finish(duration_ms=1)
+    assert [part.value for part in outcome.data] == [{"chunk": 3.0}]
+    assert outcome.data[0].artifact_name == "replacement"
+
+
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
@@ -373,6 +464,105 @@ def test_text_limit_counts_messages_and_artifacts_and_allows_boundary(
             StreamResponse(
                 artifact_update=TaskArtifactUpdateEvent(
                     artifact=Artifact(parts=[Part(text="bb")]),
+                )
+            )
+        )
+
+
+def test_enforces_structured_data_count_and_size_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(protocol_module, "MAX_DATA_PARTS", 1)
+    collector = ResponseCollector("context")
+    with pytest.raises(ProtocolError, match="exceeded 1 structured data parts"):
+        collector.add(
+            StreamResponse(
+                message=Message(
+                    role=Role.ROLE_AGENT,
+                    parts=[new_data_part(1), new_data_part(2)],
+                )
+            )
+        )
+
+    monkeypatch.setattr(protocol_module, "MAX_DATA_PARTS", 1_000)
+    monkeypatch.setattr(protocol_module, "MAX_DATA_BYTES", 4)
+    boundary = ResponseCollector("context")
+    boundary.add(StreamResponse(message=new_data_message(10)))
+    assert boundary.finish(duration_ms=1).data[0].value == 10.0
+
+    oversized = ResponseCollector("context")
+    with pytest.raises(ProtocolError, match="structured data exceeded 4 bytes"):
+        oversized.add(StreamResponse(message=new_data_message("long")))
+
+    metadata = ResponseCollector("context")
+    with pytest.raises(ProtocolError, match="structured data exceeded 4 bytes"):
+        metadata.add(StreamResponse(message=new_data_message(10, media_type="x")))
+
+
+def test_structured_data_count_limit_allows_the_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(protocol_module, "MAX_DATA_PARTS", 2)
+    collector = ResponseCollector("context")
+
+    collector.add(
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[new_data_part(1), new_data_part(2)],
+            )
+        )
+    )
+
+    assert len(collector.finish(duration_ms=1).data) == 2
+
+
+def test_rejects_non_finite_structured_data() -> None:
+    collector = ResponseCollector("context")
+
+    with pytest.raises(ProtocolError, match="invalid structured data"):
+        collector.add(StreamResponse(message=new_data_message(float("nan"))))
+
+
+def test_enforces_raw_data_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(protocol_module, "MAX_RAW_BYTES", 2)
+    collector = ResponseCollector("context")
+
+    with pytest.raises(ProtocolError, match="raw data exceeded 2 bytes"):
+        collector.add(
+            StreamResponse(
+                message=Message(
+                    role=Role.ROLE_AGENT,
+                    parts=[Part(raw=b"abc")],
+                )
+            )
+        )
+
+    monkeypatch.setattr(protocol_module, "MAX_RAW_BYTES", 3)
+    boundary = ResponseCollector("context")
+    boundary.add(
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[Part(raw=b"abc")],
+            )
+        )
+    )
+
+    appended = ResponseCollector("context")
+    appended.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=Artifact(artifact_id="raw", parts=[Part(raw=b"aa")]),
+            )
+        )
+    )
+    with pytest.raises(ProtocolError, match="raw data exceeded 3 bytes"):
+        appended.add(
+            StreamResponse(
+                artifact_update=TaskArtifactUpdateEvent(
+                    artifact=Artifact(artifact_id="raw", parts=[Part(raw=b"bb")]),
+                    append=True,
                 )
             )
         )

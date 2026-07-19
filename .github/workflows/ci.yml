@@ -30,6 +30,7 @@ jobs:
       - run: uv run --frozen ty check
       - run: uv run --frozen zizmor --persona=pedantic --offline --strict-collection .
       - run: uv run --frozen pytest --cov=a2a_proof --cov-report=term-missing
+      - run: uv run --frozen a2a-proof check examples/official-helloworld.yaml
       - run: uv build
       - run: uv run --frozen twine check dist/*
       - run: uvx --from dist/*.whl a2a-proof --help

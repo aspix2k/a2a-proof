@@ -7,33 +7,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
-## 0.1.1 - 2026-07-19
+## 0.2.0 - 2026-07-19
 
-### Added
+### Features
 
-- Issue forms and a pull request template for focused contributions.
-- SHA-256 checksums for release artifacts.
-- CI runs on Linux, macOS, and Windows.
+- Added exact JSON assertions for A2A data parts, with message/artifact filters and RFC 6901 JSON
+  Pointer paths.
+- Preserved structured data values and their source, media type, and artifact metadata in JSON
+  reports.
+- Included a reproducible contract for the official A2A Hello World sample agent.
 
-### Changed
+### Bug fixes
 
-- Clarify the boundary between behavioral contract testing, the A2A TCK, and the A2A Inspector.
-- Show successful and failed command output in the README.
+- Aligned every line of multiline agent responses in verbose terminal output.
 
 ### Security
 
-- Enable GitHub dependency alerts and automated security updates.
+- Rejected non-finite structured values and enforced per-turn limits for structured and inline raw
+  data.
+
+### Maintenance
+
+- Made versioned changelog sections the source for GitHub release notes. Release jobs fail when
+  notes are missing.
+
+## 0.1.1 - 2026-07-19
+
+### Security
+
+- Added SHA-256 checksums for release artifacts.
+- Enabled GitHub dependency alerts and automated security updates.
+
+### Maintenance
+
+- Added CI on Linux, macOS, and Windows.
+- Added issue forms and a pull request template for focused contributions.
+
+### Documentation
+
+- Clarified the boundary between behavioral contract testing, the A2A TCK, and the A2A Inspector.
+- Added successful and failed command output to the README.
 
 ## 0.1.0 - 2026-07-19
 
-### Added
+### Features
 
-- Agent Card discovery and generated smoke scenarios.
-- JSON-RPC, HTTP+JSON, and gRPC contract execution.
-- Single-turn, multi-turn, and repeated probabilistic scenarios.
-- Terminal, JSON, and JUnit reports.
+- Added JSON-RPC, HTTP+JSON, and gRPC contract execution.
+- Added Agent Card discovery and generated smoke scenarios.
+- Added single-turn, multi-turn, and repeated probabilistic scenarios.
+- Added terminal, JSON, and JUnit reports.
 
 ### Security
 
-- Bound streamed events, response text, and configuration size.
-- Disable redirects and reject cross-origin Agent Card interfaces unless explicitly allowed.
+- Disabled redirects and rejected cross-origin Agent Card interfaces unless explicitly allowed.
+- Bounded streamed events, response text, and configuration size.

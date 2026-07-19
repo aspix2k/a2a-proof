@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from a2a_proof.models import ProofConfig
+from a2a_proof.models import DataPartResult, ProofConfig
 from a2a_proof.protocol import TurnOutcome
 from a2a_proof.runner import _format_error, run_with_sender
 
@@ -249,3 +249,39 @@ async def test_preserves_completed_turns_and_duration_on_error(
 
 def test_formats_empty_exception_without_separator() -> None:
     assert _format_error(RuntimeError()) == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_preserves_structured_data_in_turn_results() -> None:
+    part = DataPartResult(
+        source="artifact",
+        value={"city": "Paris"},
+        artifact_id="result",
+        artifact_name="forecast",
+    )
+
+    async def send_turn(message: str, **context: object) -> TurnOutcome:
+        return TurnOutcome(
+            "completed",
+            "",
+            "task",
+            str(context["context_id"]),
+            1,
+            (part,),
+        )
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "forecast",
+                    "message": "Weather?",
+                    "expect": {"data": {"path": "/city", "equals": "Paris"}},
+                }
+            ]
+        ),
+        send_turn,
+    )
+
+    assert result.passed
+    assert result.scenarios[0].trials[0].turns[0].data == [part]
