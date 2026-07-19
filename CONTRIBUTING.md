@@ -35,6 +35,9 @@ uv run mutmut results
 ## Releasing
 
 Update the version in `pyproject.toml`, refresh `uv.lock`, and move the changelog entries out of
-`Unreleased`. After CI passes on `main`, create and push the matching `vX.Y.Z` tag. The release
-workflow rebuilds and tests the package, verifies the tag version, records build provenance, and
-publishes immutable GitHub release assets. Never move or reuse a release tag.
+`Unreleased`. Use only the applicable `Features`, `Bug fixes`, `Security`, `Documentation`, and
+`Maintenance` sections. Order sections and their entries from highest to lowest user impact; do
+not use generated commit lists or vague summaries. After CI passes on `main`, create and push the
+matching `vX.Y.Z` tag. The release workflow requires that version's changelog section, rebuilds
+and tests the package, verifies the tag version, records build provenance, and publishes immutable
+GitHub release assets. Never move or reuse a release tag.

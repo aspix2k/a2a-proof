@@ -45,6 +45,16 @@ def test_renders_terminal_without_control_characters() -> None:
     assert "\x1b" not in output
 
 
+def test_indents_multiline_verbose_responses() -> None:
+    console = Console(record=True, color_system=None, width=100)
+    result = _result(passed=False)
+    result.scenarios[0].trials[0].turns[0].text = "first\nsecond"
+
+    render_terminal(result, console, verbose=True)
+
+    assert "  response: first\n            second" in console.export_text()
+
+
 def test_renders_machine_readable_json() -> None:
     rendered = render_json(_result(passed=True))
 

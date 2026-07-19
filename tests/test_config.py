@@ -118,6 +118,36 @@ scenarios:
     assert config.scenarios[0].message == "Hello"
 
 
+def test_loads_single_structured_data_expectation(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: forecast
+    message: Weather in Paris?
+    expect:
+      data:
+        source: artifact
+        artifact_name: forecast
+        media_type: application/json
+        path: /city
+        equals: Paris
+""",
+    )
+
+    expectation = load_config(path).scenarios[0].expect.data[0]
+
+    assert expectation.model_dump() == {
+        "equals": "Paris",
+        "path": "/city",
+        "source": "artifact",
+        "artifact_name": "forecast",
+        "media_type": "application/json",
+    }
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
@@ -201,6 +231,40 @@ agent: {url: https://user:password@example.com}
 scenarios: [{name: smoke, message: Hello}]
 """,
             "agent URL must not contain credentials",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: invalid pointer
+    message: Hello
+    expect: {data: {path: /bad~2escape, equals: value}}
+""",
+            "RFC 6901 JSON Pointer",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: invalid source
+    message: Hello
+    expect:
+      data: {source: message, artifact_name: result, equals: null}
+""",
+            "artifact_name cannot be used with source: message",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: non-finite
+    message: Hello
+    expect: {data: {equals: .nan}}
+""",
+            "Input should be a finite number",
         ),
     ],
 )

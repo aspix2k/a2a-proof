@@ -46,7 +46,8 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
                         Text(f"  trial {trial.index}, turn {turn.index}: {_diagnostic(failure)}")
                     )
                 if verbose and turn.text:
-                    console.print(Text(f"  response: {_diagnostic(turn.text)}", style="dim"))
+                    response = _diagnostic(turn.text).replace("\n", "\n            ")
+                    console.print(Text(f"  response: {response}", style="dim"))
 
     status = "passed" if result.passed else "failed"
     style = "bold green" if result.passed else "bold red"

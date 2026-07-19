@@ -26,7 +26,7 @@ A2A 1.0 and supports JSON-RPC, HTTP+JSON, and gRPC.
 ## Quick start
 
 ```console
-uv tool install git+https://github.com/aspix2k/a2a-proof@v0.1.1
+uv tool install git+https://github.com/aspix2k/a2a-proof@v0.2.0
 a2a-proof init https://agent.example.com
 a2a-proof run
 ```
@@ -76,6 +76,18 @@ scenarios:
     expect:
       text:
         matches: "(?i)red|blue|yellow"
+
+  - name: structured forecast
+    message: Return the forecast as structured data
+    expect:
+      data:
+        - source: artifact
+          artifact_name: forecast
+          media_type: application/json
+          path: /city
+          equals: Paris
+        - path: /temperature
+          equals: 21
 ```
 
 Each scenario uses either `message` or `turns`. Multi-turn scenarios preserve the A2A context
@@ -86,6 +98,11 @@ Text assertions support `contains`, `not_contains`, `equals`, and Python regular
 and canceled tasks fail by default unless that state is explicitly expected.
 
 `trials` repeats a scenario. `pass_rate` is the minimum successful fraction and defaults to `1`.
+
+Structured assertions inspect A2A `data` parts from messages or artifacts. `path` is an
+[RFC 6901 JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901); an empty path checks the complete
+JSON value. Each assertion must match at least one data part after the optional source, artifact
+name, and media type filters are applied.
 
 ## Output
 
@@ -117,6 +134,16 @@ Echo
   response: echo: Hello
 
 1 scenario failed in 1ms
+```
+
+## Official sample
+
+The repository includes a contract for the A2A project's
+[Hello World agent](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents/helloworld).
+Start that agent on its default port, then run from an `a2a-proof` checkout:
+
+```console
+uv run a2a-proof run examples/official-helloworld.yaml
 ```
 
 ## Authentication
@@ -160,10 +187,11 @@ or configuration could not be executed. JUnit output is suitable for CI test rep
 
 ## Safety limits
 
-Per turn, responses are limited to 1,000 stream events and 1,000,000 text characters. Requests
-have a configurable timeout, regular-expression checks have a 100 ms evaluation limit, HTTP
-redirects are disabled, and artifact URLs are never fetched. Treat the tested agent and all
-returned text as untrusted input.
+Per turn, responses are limited to 1,000 stream events, 1,000 structured data parts, and 1 MB each
+of text, structured data, and inline raw data. Requests have a configurable timeout,
+regular-expression checks have a 100 ms evaluation limit, HTTP redirects are disabled, and
+artifact URLs are never fetched. Treat the tested agent and all returned content as untrusted
+input.
 
 ## Development
 

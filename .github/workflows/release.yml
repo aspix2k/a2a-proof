@@ -49,6 +49,9 @@ jobs:
       contents: write # Required to create the GitHub release.
       id-token: write # Required to sign build provenance through OIDC.
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-distributions
@@ -56,12 +59,32 @@ jobs:
       - uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: dist/*
+      - name: Read release notes from changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            $1 == "##" && $2 == version { found = 1; next }
+            found && $1 == "##" { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md
+          awk '
+            /^### / {
+              if ($0 !~ /^### (Features|Bug fixes|Security|Documentation|Maintenance)$/ ||
+                  (section && !entry)) exit 1
+              section = 1
+              entry = 0
+              next
+            }
+            section && /^- / { entry = 1 }
+            END { if (!section || !entry) exit 1 }
+          ' release-notes.md
       - name: Create GitHub release
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "$GITHUB_REF_NAME" dist/*
-          --generate-notes
+          --notes-file release-notes.md
           --verify-tag
           --fail-on-no-commits

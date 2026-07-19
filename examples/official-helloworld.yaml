@@ -1,0 +1,13 @@
+version: 1
+
+agent:
+  url: http://127.0.0.1:9999
+  timeout: 10
+
+scenarios:
+  - name: official Hello World sample
+    message: hi
+    expect:
+      state: completed
+      text:
+        contains: Hello, World! I have received your request (hi)
