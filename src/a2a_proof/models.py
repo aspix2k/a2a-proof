@@ -337,6 +337,65 @@ class DataExpectation(StrictModel):
         return self
 
 
+class AP2MandateExpectation(StrictModel):
+    type: Literal["checkout", "payment"]
+    trusted_root_jwk: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=1_000,
+            description="Public JWK path relative to the contract file.",
+        ),
+    ]
+    audience: Annotated[str, Field(min_length=1, max_length=1_000)]
+    nonce: Annotated[str, Field(min_length=1, max_length=1_000)]
+    path: Annotated[str, Field(max_length=1_000)] | None = Field(
+        default=None,
+        description="RFC 6901 pointer to the mandate token; inferred from type by default.",
+    )
+    source: Literal["message", "artifact"] | None = None
+    artifact_name: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    media_type: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    transaction_id: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    open_checkout_hash: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    checkout_hash: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+
+    @field_validator("trusted_root_jwk")
+    @classmethod
+    def require_relative_key_path(cls, path: str) -> str:
+        if "\0" in path:
+            raise ValueError("trusted_root_jwk contains a null byte")
+        if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+            raise ValueError("trusted_root_jwk must be relative to the contract file")
+        return path
+
+    @field_validator("path")
+    @classmethod
+    def validate_json_pointer(cls, path: str | None) -> str | None:
+        if path is not None and not re.fullmatch(r"(?:/(?:[^~]|~[01])*)*", path):
+            raise ValueError("path must be an RFC 6901 JSON Pointer")
+        return path
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> Self:
+        if self.source == "message" and self.artifact_name is not None:
+            raise ValueError("artifact_name cannot be used with source: message")
+        if self.type == "checkout" and (
+            self.transaction_id is not None or self.open_checkout_hash is not None
+        ):
+            raise ValueError("transaction_id and open_checkout_hash require an AP2 payment mandate")
+        if self.type == "payment" and self.checkout_hash is not None:
+            raise ValueError("checkout_hash requires an AP2 checkout mandate")
+        return self
+
+    @property
+    def resolved_path(self) -> str:
+        if self.path is not None:
+            return self.path
+        suffix = "Checkout" if self.type == "checkout" else "Payment"
+        return f"/ap2.mandates.{suffix}MandateSdJwt"
+
+
 class Expectation(StrictModel):
     state: str | None = Field(
         default=None,
@@ -358,6 +417,11 @@ class Expectation(StrictModel):
         default_factory=list,
         max_length=100,
         description="File-part metadata checks.",
+    )
+    ap2: list[AP2MandateExpectation] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Signed AP2 mandate chain checks.",
     )
     max_seconds: float | None = Field(
         default=None,
@@ -389,6 +453,15 @@ class Expectation(StrictModel):
     @classmethod
     def accept_single_file_expectation(cls, value: object) -> object:
         return [value] if isinstance(value, (dict, FileExpectation)) else value
+
+    @field_validator(
+        "ap2",
+        mode="before",
+        json_schema_input_type=AP2MandateExpectation | list[AP2MandateExpectation],
+    )
+    @classmethod
+    def accept_single_ap2_expectation(cls, value: object) -> object:
+        return [value] if isinstance(value, (dict, AP2MandateExpectation)) else value
 
 
 class Turn(StrictModel):

@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from a2a_proof.ap2 import AP2Error, validate_config_ap2
 from a2a_proof.files import FileInputError, validate_config_files
 from a2a_proof.models import ProofConfig
 
@@ -51,8 +52,9 @@ def load_config(path: Path, environ: Mapping[str, str] | None = None) -> ProofCo
         config.bind_contract_sha256(sha256(content).hexdigest())
         config.bind_redaction_values(_header_environment_values(raw, environment))
         validate_config_files(config)
+        validate_config_ap2(config)
         return config
-    except (ConfigError, FileInputError, ValidationError) as error:
+    except (AP2Error, ConfigError, FileInputError, ValidationError) as error:
         raise ConfigError(str(error)) from error
 
 
@@ -126,9 +128,41 @@ def config_schema() -> dict[str, Any]:
             "maxItems": 100,
         },
     ]
-    for name in ("data", "files"):
+    for name in ("data", "files", "ap2"):
         multiple = definitions["Expectation"]["properties"][name]["anyOf"][1]
         multiple["maxItems"] = 100
+    ap2_expectation = definitions["AP2MandateExpectation"]
+    ap2_expectation["properties"]["path"]["anyOf"][0]["pattern"] = r"^(?:/(?:[^~]|~[01])*)*$"
+    ap2_expectation["allOf"] = [
+        {
+            "if": {
+                "properties": {"source": {"const": "message"}},
+                "required": ["source"],
+            },
+            "then": {"not": {"required": ["artifact_name"]}},
+        },
+        {
+            "if": {
+                "properties": {"type": {"const": "checkout"}},
+                "required": ["type"],
+            },
+            "then": {
+                "not": {
+                    "anyOf": [
+                        {"required": ["transaction_id"]},
+                        {"required": ["open_checkout_hash"]},
+                    ]
+                }
+            },
+        },
+        {
+            "if": {
+                "properties": {"type": {"const": "payment"}},
+                "required": ["type"],
+            },
+            "then": {"not": {"required": ["checkout_hash"]}},
+        },
+    ]
     capabilities = definitions["AgentCapabilitiesExpectation"]
     capability_names = ("streaming", "push_notifications", "extended_agent_card")
     for name in capability_names:

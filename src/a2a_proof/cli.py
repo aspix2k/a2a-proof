@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from a2a_proof.a2a import discover_agent
+from a2a_proof.ap2 import AP2Error, ensure_ap2_sdk
 from a2a_proof.config import ConfigError, load_config, write_config
 from a2a_proof.diffing import compare_results
 from a2a_proof.evidence import EvidenceError, write_evidence
@@ -124,7 +125,8 @@ def check_command(config_path: Path) -> None:
     """Validate a configuration without contacting the agent."""
     try:
         config = load_config(config_path)
-    except ConfigError as error:
+        ensure_ap2_sdk(config)
+    except (AP2Error, ConfigError) as error:
         raise ProofCommandError(str(error)) from error
     click.echo(f"Valid: {_scenario_count(len(config.scenarios))}.")
 

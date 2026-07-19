@@ -17,7 +17,8 @@ The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol co
 [A2A Inspector](https://github.com/a2aproject/a2a-inspector) supports interactive debugging.
 `a2a-proof` adds repeatable behavior and lifecycle contracts for local development and CI.
 
-It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC.
+It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC. The SDK compatibility layer also supports
+AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC.
 
 ## Quick start
 
@@ -61,6 +62,7 @@ $ a2a-proof run
 - Single-turn, multi-turn, repeated, and parallel trials.
 - Agent Card, state trajectory, latency, and global leak invariants.
 - Task cancellation and persistence through real A2A lifecycle operations.
+- Signed AP2 payment and checkout mandate chains.
 - Baseline-to-candidate deployment comparison.
 - Terminal, JSON, JUnit, and bounded evidence output.
 
@@ -78,6 +80,7 @@ contract outcomes rather than raw model text; the candidate result controls the 
 - [Writing contracts](docs/contracts.md)
 - [Assertions](docs/assertions.md)
 - [Task lifecycle](docs/lifecycle.md)
+- [AP2 mandate contracts](docs/ap2.md)
 - [Running in development and CI](docs/operations.md)
 - [Configuration schema](schema/a2a-proof.schema.json)
 

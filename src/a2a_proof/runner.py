@@ -9,6 +9,7 @@ from uuid import uuid4
 from a2a.types import AgentCard
 
 from a2a_proof.a2a import A2ASession
+from a2a_proof.ap2 import ensure_ap2_sdk, redact_ap2
 from a2a_proof.assertions import evaluate, evaluate_card, evaluate_invariants
 from a2a_proof.config import resolve_invariant_secrets
 from a2a_proof.evidence import agent_card_sha256
@@ -39,6 +40,7 @@ async def run(
     max_parallel_trials: int = 1,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
+    ensure_ap2_sdk(config)
     invariant_secrets = resolve_invariant_secrets(config, environ)
     async with await A2ASession.connect(config.agent) as session:
         return await run_with_sender(
@@ -63,6 +65,7 @@ async def run_with_sender(
     max_parallel_trials: int = 1,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
+    ensure_ap2_sdk(config)
     started = perf_counter()
     card_result: CardResult | None = None
     if config.card is not None:
@@ -190,7 +193,7 @@ async def _run_trial(
                 if turn.return_immediately:
                     arguments["return_immediately"] = True
                 outcome = await send_turn(turn.message, **arguments)
-            failures = evaluate(turn.expect, outcome)
+            failures = evaluate(turn.expect, outcome, contract_dir=config.contract_dir)
             invariant_failures: list[str] = []
             if config.invariants is not None:
                 invariant_failures = evaluate_invariants(
@@ -200,6 +203,7 @@ async def _run_trial(
                 )
                 failures.extend(invariant_failures)
             redact_response = bool(invariant_failures)
+            reported_data = redact_ap2(turn.expect.ap2, outcome.data)
             results.append(
                 TurnResult(
                     index=turn_index,
@@ -209,7 +213,7 @@ async def _run_trial(
                     duration_ms=outcome.duration_ms,
                     first_event_ms=outcome.first_event_ms,
                     text=REDACTED_RESPONSE if redact_response else outcome.text,
-                    data=[] if redact_response else list(outcome.data),
+                    data=[] if redact_response else list(reported_data),
                     files=[] if redact_response else list(outcome.files),
                     response_redacted=redact_response,
                     failures=failures,

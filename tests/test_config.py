@@ -153,6 +153,62 @@ scenarios:
     assert config.contract_sha256 == sha256(path.read_bytes()).hexdigest()
 
 
+def test_loads_ap2_assertion_and_validates_trusted_root(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "root.jwk",
+        '{"kty":"EC","crv":"P-256","x":"eA","y":"eQ"}',
+    )
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: payment
+    message: Pay
+    expect:
+      ap2:
+        type: payment
+        trusted_root_jwk: root.jwk
+        audience: merchant
+        nonce: ${PAYMENT_NONCE}
+        transaction_id: tx-1
+""",
+    )
+
+    config = load_config(path, {"PAYMENT_NONCE": "nonce-1"})
+    expectation = config.scenarios[0].expect.ap2[0]
+
+    assert expectation.nonce == "nonce-1"
+    assert expectation.resolved_path == "/ap2.mandates.PaymentMandateSdJwt"
+
+
+def test_reports_invalid_ap2_trusted_root_as_configuration_error(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "root.jwk",
+        '{"kty":"EC","crv":"P-256","x":"eA","y":"eQ","d":"private"}',
+    )
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: payment
+    message: Pay
+    expect:
+      ap2:
+        type: payment
+        trusted_root_jwk: root.jwk
+        audience: merchant
+        nonce: nonce-1
+""",
+    )
+
+    with pytest.raises(ConfigError, match="must contain a public key only"):
+        load_config(path)
+
+
 @pytest.mark.parametrize(
     ("environment", "message"),
     [
@@ -339,6 +395,7 @@ def test_resolves_single_turn_structured_input() -> None:
             "states": None,
             "data": [],
             "files": [],
+            "ap2": [],
             "max_seconds": None,
             "max_first_event_seconds": None,
         },

@@ -7,6 +7,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.8.0 - 2026-07-19
+
+### Security
+
+- Added cryptographic verification for AP2 v0.2.0 dSD-JWT mandate chains, including every
+  delegation signature and binding, terminal audience and nonce, validity windows, typed payloads,
+  and open-to-closed constraints.
+- Required an explicit local public P-256 trust root. Key paths are confined to the contract
+  directory, private JWK material is rejected, reads are bounded, and remote key discovery is never
+  attempted.
+- Redacted mandate tokens selected by AP2 assertions before JSON, JUnit, terminal, or evidence
+  output while preserving unrelated response data. Verification failures do not echo untrusted
+  token payloads.
+
+### Features
+
+- Added `expect.ap2` assertions for signed payment and checkout mandate chains. Official AP2 data
+  keys are inferred from the mandate type, with optional response-part filters and custom JSON
+  Pointer paths.
+- Added payment checks for expected transaction IDs and open-checkout references, plus checkout
+  checks for expected hashes and automatic binding of `checkout_hash` to the signed
+  `checkout_jwt`.
+
+### Documentation
+
+- Added a focused AP2 guide covering the pinned official SDK install, trust-root setup, payment and
+  checkout examples, verification semantics, redaction, and current protocol boundary.
+
+### Maintenance
+
+- Added a pinned CI integration test against the official AP2 v0.2.0 source commit. It creates
+  valid payment and checkout chains, verifies both, and rejects a tampered signature.
+- Confirmed real interoperability between the current A2A client and an AP2-style A2A 0.3.24
+  JSON-RPC server, including legacy extension-header translation and signed mandate transport.
+- Extended the generated configuration schema and deterministic mutation target for AP2 while
+  retaining complete statement and branch coverage.
+
 ## 0.7.0 - 2026-07-19
 
 ### Features

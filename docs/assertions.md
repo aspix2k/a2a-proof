@@ -65,6 +65,9 @@ Use exactly one predicate per entry: `equals`, `exists`, `matches`, numeric `gt`
 or `json_schema`. JSON equality does not treat booleans as numbers. Embedded schemas use JSON
 Schema Draft 2020-12 and may contain local references; external references are rejected.
 
+Signed AP2 payment and checkout chains use a dedicated `expect.ap2` assertion rather than a generic
+string check. See [AP2 mandate contracts](ap2.md).
+
 ## Files
 
 Response file checks match metadata from raw and URL parts. Remote URLs remain passive and are

@@ -71,3 +71,19 @@ jobs:
           python-version: "3.13"
       - run: uv sync --frozen --all-groups
       - run: uv run --frozen pytest
+
+  ap2:
+    name: AP2 v0.2.0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: >-
+          uv run --isolated --default-index https://pypi.org/simple --with-editable .
+          --with 'ap2 @ git+https://github.com/google-agentic-commerce/AP2.git@b4587ac1d055888a73b4b21750973cffba961793'
+          pytest -q tests/test_ap2_official.py
