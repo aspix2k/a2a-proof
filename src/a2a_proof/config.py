@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from a2a_proof.files import FileInputError, validate_config_files
 from a2a_proof.models import ProofConfig
 
 MAX_CONFIG_BYTES = 1_000_000
@@ -42,8 +43,11 @@ def load_config(path: Path, environ: Mapping[str, str] | None = None) -> ProofCo
 
     try:
         expanded = _expand_environment(raw, environ or os.environ)
-        return ProofConfig.model_validate(expanded)
-    except (ConfigError, ValidationError) as error:
+        config = ProofConfig.model_validate(expanded)
+        config.bind_contract_dir(path.parent)
+        validate_config_files(config)
+        return config
+    except (ConfigError, FileInputError, ValidationError) as error:
         raise ConfigError(str(error)) from error
 
 
@@ -80,6 +84,7 @@ def write_config(path: Path, data: Mapping[str, Any], *, force: bool = False) ->
 
 def config_schema() -> dict[str, Any]:
     schema = ProofConfig.model_json_schema(mode="validation")
+    definitions = schema["$defs"]
     data_expectation = schema["$defs"]["DataExpectation"]
     for name in ("exists", "matches", "gt", "gte", "lt", "lte", "json_schema"):
         data_expectation["properties"][name].pop("default")
@@ -96,6 +101,45 @@ def config_schema() -> dict[str, Any]:
             ]
         },
         {"required": ["json_schema"]},
+    ]
+    file_input = definitions["FileInput"]
+    definitions["FileInput"] = {
+        "title": file_input["title"],
+        "description": "A relative path or file input object.",
+        "anyOf": [
+            {"type": "string", "minLength": 1, "maxLength": 1_000},
+            file_input,
+        ],
+    }
+    contains = definitions["ContainsExpectation"]["properties"]["contains"]
+    contains["anyOf"] = [
+        {"type": "string", "minLength": 1, "maxLength": 200},
+        {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 200},
+            "minItems": 1,
+            "maxItems": 100,
+        },
+    ]
+    for name in ("data", "files"):
+        multiple = definitions["Expectation"]["properties"][name]["anyOf"][1]
+        multiple["maxItems"] = 100
+    capabilities = definitions["AgentCapabilitiesExpectation"]
+    capability_names = ("streaming", "push_notifications", "extended_agent_card")
+    for name in capability_names:
+        capabilities["properties"][name].pop("default")
+    capabilities["anyOf"] = [{"required": [name]} for name in capability_names]
+    card = definitions["AgentCardExpectation"]
+    card_names = ("skills", "capabilities", "input_modes", "output_modes")
+    for name in card_names:
+        card["properties"][name].pop("default")
+    card["anyOf"] = [{"required": [name]} for name in card_names]
+    states = definitions["StateSequenceExpectation"]
+    for name in ("equals", "contains_in_order"):
+        states["properties"][name].pop("default")
+    states["oneOf"] = [
+        {"required": ["equals"]},
+        {"required": ["contains_in_order"]},
     ]
     schema.update(
         {

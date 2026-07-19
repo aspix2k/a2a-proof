@@ -9,13 +9,15 @@ from a2a.helpers import get_artifact_text, get_data_parts, get_message_text
 from a2a.types import Artifact, Message, Part, Role, StreamResponse, Task, TaskState
 from pydantic import ValidationError
 
-from a2a_proof.models import DataPartResult
+from a2a_proof.models import DataPartResult, FilePartResult
 
 MAX_EVENTS = 1_000
 MAX_TEXT_CHARS = 1_000_000
 MAX_DATA_BYTES = 1_000_000
 MAX_DATA_PARTS = 1_000
-MAX_RAW_BYTES = 1_000_000
+MAX_FILE_PARTS = 1_000
+MAX_RAW_BYTES = 20_000_000
+MAX_FILE_URL_CHARS = 10_000
 INTERRUPTED_STATES = {
     "auth_required",
     "canceled",
@@ -39,12 +41,15 @@ class TurnOutcome:
     duration_ms: int
     data: tuple[DataPartResult, ...] = ()
     first_event_ms: int | None = None
+    states: tuple[str, ...] = ()
+    files: tuple[FilePartResult, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _CollectedContent:
     text: str
     data: tuple[DataPartResult, ...]
+    files: tuple[FilePartResult, ...]
     raw_bytes: int
     artifact_name: str | None = None
 
@@ -54,6 +59,7 @@ class ResponseCollector:
         self._context_id = context_id
         self._task_id: str | None = None
         self._state = "message"
+        self._states: list[str] = []
         self._events = 0
         self._messages: dict[str, _CollectedContent] = {}
         self._artifacts: dict[str, _CollectedContent] = {}
@@ -65,13 +71,14 @@ class ResponseCollector:
 
         if response.HasField("message"):
             self._add_message(response.message)
+            self._record_state("message")
         elif response.HasField("task"):
             self._add_task(response.task)
         elif response.HasField("status_update"):
             update = response.status_update
             self._task_id = update.task_id or self._task_id
             self._context_id = update.context_id or self._context_id
-            self._state = _state_name(update.status.state)
+            self._record_state(_state_name(update.status.state))
             if update.status.HasField("message"):
                 self._add_message(update.status.message)
         elif response.HasField("artifact_update"):
@@ -91,6 +98,9 @@ class ResponseCollector:
         contents = [*self._messages.values(), *self._artifacts.values()]
         text = "\n".join(content.text for content in contents if content.text)
         data = tuple(part for content in contents for part in content.data)
+        files = tuple(part for content in contents for part in content.files)
+        if not self._states:
+            self._record_state(self._state)
         return TurnOutcome(
             state=self._state,
             text=text,
@@ -99,12 +109,14 @@ class ResponseCollector:
             duration_ms=duration_ms,
             data=data,
             first_event_ms=first_event_ms,
+            states=tuple(self._states),
+            files=files,
         )
 
     def _add_task(self, task: Task) -> None:
         self._task_id = task.id or self._task_id
         self._context_id = task.context_id or self._context_id
-        self._state = _state_name(task.status.state)
+        self._record_state(_state_name(task.status.state))
         if task.status.HasField("message"):
             self._add_message(task.status.message)
         for message in task.history:
@@ -119,6 +131,7 @@ class ResponseCollector:
         self._messages[key] = _CollectedContent(
             text=get_message_text(message),
             data=_collect_data(message.parts, source="message"),
+            files=_collect_files(message.parts, source="message"),
             raw_bytes=_raw_size(message.parts),
         )
         self._task_id = message.task_id or self._task_id
@@ -135,14 +148,22 @@ class ResponseCollector:
             artifact_id=artifact.artifact_id or None,
             artifact_name=name,
         )
+        files = _collect_files(
+            artifact.parts,
+            source="artifact",
+            artifact_id=artifact.artifact_id or None,
+            artifact_name=name,
+        )
         raw_bytes = _raw_size(artifact.parts)
         if append and previous is not None:
             text = previous.text + text
             data = previous.data + data
+            files = previous.files + files
             raw_bytes += previous.raw_bytes
         self._artifacts[key] = _CollectedContent(
             text=text,
             data=data,
+            files=files,
             raw_bytes=raw_bytes,
             artifact_name=name,
         )
@@ -175,6 +196,14 @@ class ResponseCollector:
         )
         if data_size > MAX_DATA_BYTES:
             raise ProtocolError(f"agent response structured data exceeded {MAX_DATA_BYTES} bytes")
+        files = [part for content in contents for part in content.files]
+        if len(files) > MAX_FILE_PARTS:
+            raise ProtocolError(f"agent response exceeded {MAX_FILE_PARTS} file parts")
+
+    def _record_state(self, state: str) -> None:
+        self._state = state
+        if not self._states or self._states[-1] != state:
+            self._states.append(state)
 
 
 def _collect_data(
@@ -198,6 +227,39 @@ def _collect_data(
         )
     except (ValidationError, ValueError) as error:
         raise ProtocolError("agent returned invalid structured data") from error
+
+
+def _collect_files(
+    parts: Sequence[Part],
+    *,
+    source: Literal["message", "artifact"],
+    artifact_id: str | None = None,
+    artifact_name: str | None = None,
+) -> tuple[FilePartResult, ...]:
+    files: list[FilePartResult] = []
+    try:
+        for part in parts:
+            kind = part.WhichOneof("content")
+            if kind not in {"raw", "url"}:
+                continue
+            if kind == "url" and len(part.url) > MAX_FILE_URL_CHARS:
+                raise ProtocolError(
+                    f"agent response file URL exceeded {MAX_FILE_URL_CHARS} characters"
+                )
+            files.append(
+                FilePartResult(
+                    source=source,
+                    kind=kind,
+                    filename=part.filename or None,
+                    media_type=part.media_type or None,
+                    size_bytes=len(part.raw) if kind == "raw" else None,
+                    artifact_id=artifact_id,
+                    artifact_name=artifact_name,
+                )
+            )
+    except (ValidationError, ValueError) as error:
+        raise ProtocolError("agent returned invalid file metadata") from error
+    return tuple(files)
 
 
 def _raw_size(parts: Sequence[Part]) -> int:

@@ -16,12 +16,14 @@ from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.helpers import new_data_part, new_message, new_text_part
 from a2a.types import (
     AgentCard,
+    Part,
     Role,
     SendMessageRequest,
 )
 from a2a.utils.constants import TransportProtocol
 from pydantic import JsonValue
 
+from a2a_proof.files import PreparedFile
 from a2a_proof.models import AgentConfig
 from a2a_proof.protocol import ProtocolError, ResponseCollector, TurnOutcome
 
@@ -32,11 +34,13 @@ class A2ASession:
     def __init__(
         self,
         client: Client,
+        card: AgentCard,
         timeout: float,
         headers: Mapping[str, str] | None = None,
         extensions: list[str] | None = None,
     ) -> None:
         self._client = client
+        self.card = card
         self._timeout = timeout
         self._service_parameters = _service_parameters(headers or {}, extensions or [])
 
@@ -65,7 +69,7 @@ class A2ASession:
                 use_client_preference=config.transport != "auto",
             )
             client = ClientFactory(client_config).create(card)
-            return cls(client, config.timeout, config.headers, extensions)
+            return cls(client, card, config.timeout, config.headers, extensions)
         except BaseException:
             await http_client.aclose()
             raise
@@ -89,11 +93,16 @@ class A2ASession:
         text: str | None,
         *,
         data: list[JsonValue] | None = None,
+        files: list[PreparedFile] | None = None,
         context_id: str,
         task_id: str | None,
     ) -> TurnOutcome:
         parts = [new_text_part(text)] if text is not None else []
         parts.extend(new_data_part(value) for value in data or [])
+        parts.extend(
+            Part(raw=file.content, filename=file.filename, media_type=file.media_type)
+            for file in files or []
+        )
         message = new_message(
             parts,
             context_id=context_id,

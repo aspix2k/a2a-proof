@@ -53,7 +53,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     "streaming": False,
                     "extensions": [{"uri": TEST_EXTENSION}],
                 },
-                "defaultInputModes": ["text/plain", "application/json"],
+                "defaultInputModes": ["text/plain", "application/json", "application/pdf"],
                 "defaultOutputModes": ["text/plain"],
                 "skills": [
                     {
@@ -76,10 +76,32 @@ class _AgentHandler(BaseHTTPRequestHandler):
         message = payload["message"]
         text = "".join(part.get("text", "") for part in message["parts"])
         data = [part["data"] for part in message["parts"] if "data" in part]
+        files = [part for part in message["parts"] if "raw" in part]
         if data and self.headers.get("A2A-Extensions") != TEST_EXTENSION:
             self._send_json(400, {"error": "missing extension activation"})
             return
-        if data and data[0].get("action") == "forecast":
+        if files:
+            result = {
+                "task": {
+                    "id": "task",
+                    "contextId": message["contextId"],
+                    "status": {"state": "TASK_STATE_COMPLETED"},
+                    "artifacts": [
+                        {
+                            "artifactId": "result",
+                            "name": "processed file",
+                            "parts": [
+                                {
+                                    "url": "https://files.example/result?token=secret",
+                                    "filename": files[0]["filename"],
+                                    "mediaType": files[0]["mediaType"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        elif data and data[0].get("action") == "forecast":
             result = {
                 "task": {
                     "id": "task",
@@ -265,6 +287,53 @@ async def test_runs_structured_artifact_contract_over_real_jsonrpc(agent_url: st
     assert data[0].value == {"city": "Paris", "temperature": 21.0}
     assert data[0].artifact_id == "result"
     assert result.scenarios[0].trials[0].turns[0].first_event_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_runs_file_and_agent_card_contract_over_real_jsonrpc(
+    agent_url: str,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "report.pdf").write_bytes(b"report")
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": agent_url},
+            "card": {
+                "skills": {"contains": "echo"},
+                "capabilities": {"streaming": False},
+                "input_modes": {"contains": "application/pdf"},
+                "output_modes": {"contains": "text/plain"},
+            },
+            "scenarios": [
+                {
+                    "name": "process file",
+                    "files": ["report.pdf"],
+                    "expect": {
+                        "state": "completed",
+                        "states": {"equals": ["completed"]},
+                        "files": {
+                            "source": "artifact",
+                            "artifact_name": "processed file",
+                            "filename": "report.pdf",
+                            "media_type": "application/pdf",
+                            "kind": "url",
+                            "count": 1,
+                        },
+                    },
+                }
+            ],
+        }
+    )
+    config.bind_contract_dir(tmp_path)
+
+    result = await run(config)
+
+    assert result.passed
+    turn = result.scenarios[0].trials[0].turns[0]
+    assert turn.states == ["completed"]
+    assert turn.files[0].filename == "report.pdf"
+    assert "secret" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio

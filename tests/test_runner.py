@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
-from a2a_proof.models import DataPartResult, ProofConfig
+from a2a_proof.files import PreparedFile
+from a2a_proof.models import DataPartResult, FilePartResult, ProofConfig
 from a2a_proof.protocol import TurnOutcome
 from a2a_proof.runner import _format_error, run_with_sender
 
@@ -76,6 +80,7 @@ async def test_runs_multi_turn_scenario_with_task_continuation() -> None:
     assert calls[1] == {
         "message": "Moscow",
         "data": [],
+        "files": [],
         "context_id": "server-context",
         "task_id": "task",
     }
@@ -195,7 +200,12 @@ async def test_continues_auth_required_task() -> None:
     )
 
     assert result.passed
-    assert calls[1] == {"data": [], "context_id": "server-context", "task_id": "task"}
+    assert calls[1] == {
+        "data": [],
+        "files": [],
+        "context_id": "server-context",
+        "task_id": "task",
+    }
 
 
 @pytest.mark.asyncio
@@ -260,6 +270,12 @@ async def test_preserves_structured_data_in_turn_results() -> None:
         artifact_id="result",
         artifact_name="forecast",
     )
+    file = FilePartResult(
+        source="artifact",
+        kind="url",
+        filename="forecast.json",
+        media_type="application/json",
+    )
 
     async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         return TurnOutcome(
@@ -270,6 +286,8 @@ async def test_preserves_structured_data_in_turn_results() -> None:
             1,
             (part,),
             first_event_ms=2,
+            states=("working", "completed"),
+            files=(file,),
         )
 
     result = await run_with_sender(
@@ -288,6 +306,8 @@ async def test_preserves_structured_data_in_turn_results() -> None:
     assert result.passed
     turn = result.scenarios[0].trials[0].turns[0]
     assert turn.data == [part]
+    assert turn.files == [file]
+    assert turn.states == ["working", "completed"]
     assert turn.first_event_ms == 2
 
 
@@ -307,3 +327,144 @@ async def test_sends_structured_input_without_text() -> None:
     assert result.passed
     assert calls[0]["message"] is None
     assert calls[0]["data"] == [{"order_id": "order-42"}]
+
+
+@pytest.mark.asyncio
+async def test_prepares_file_inputs_for_each_turn(tmp_path: Path) -> None:
+    (tmp_path / "report.txt").write_text("report", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        calls.append({"message": message, **context})
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    config = _config([{"name": "file", "files": ["report.txt"]}])
+    config.bind_contract_dir(tmp_path)
+
+    result = await run_with_sender(config, send_turn)
+
+    assert result.passed
+    prepared = cast(list[PreparedFile], calls[0]["files"])
+    assert prepared[0].content == b"report"
+    assert prepared[0].filename == "report.txt"
+    assert prepared[0].media_type == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_applies_defaults_to_runner_trials() -> None:
+    calls = 0
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        nonlocal calls
+        calls += 1
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "defaults": {"trials": 2, "pass_rate": 0.5},
+            "scenarios": [{"name": "defaulted", "message": "hello"}],
+        }
+    )
+
+    result = await run_with_sender(config, send_turn)
+
+    assert result.passed
+    assert calls == 2
+    assert result.scenarios[0].required_trials == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_card_assertions_run_before_scenarios() -> None:
+    calls = 0
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        nonlocal calls
+        calls += 1
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "card": {
+                "skills": {"contains": "summarize"},
+                "capabilities": {"streaming": True},
+                "input_modes": {"contains": "application/pdf"},
+                "output_modes": {"contains": "text/plain"},
+            },
+            "scenarios": [{"name": "smoke", "message": "hello"}],
+        }
+    )
+    card = AgentCard(
+        name="Agent",
+        capabilities=AgentCapabilities(streaming=True),
+        default_input_modes=["APPLICATION/PDF"],
+        default_output_modes=["TEXT/PLAIN"],
+        skills=[AgentSkill(id="summarize")],
+    )
+
+    result = await run_with_sender(config, send_turn, card=card)
+
+    assert result.passed
+    assert result.card is not None
+    assert result.card.passed
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_agent_card_preflight_skips_agent_messages() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        raise AssertionError("scenario must not run")
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "card": {
+                "skills": {"contains": ["missing"]},
+                "capabilities": {
+                    "streaming": True,
+                    "push_notifications": True,
+                    "extended_agent_card": True,
+                },
+                "input_modes": {"contains": "application/pdf"},
+                "output_modes": {"contains": "application/json"},
+            },
+            "scenarios": [{"name": "smoke", "message": "hello"}],
+        }
+    )
+
+    result = await run_with_sender(config, send_turn, card=AgentCard(name="Agent"))
+
+    assert not result.passed
+    assert result.scenarios == []
+    assert result.card is not None
+    assert result.card.failures == [
+        "Agent Card does not contain skill ID 'missing'",
+        "Agent Card does not contain input mode 'application/pdf'",
+        "Agent Card does not contain output mode 'application/json'",
+        "expected Agent Card capability 'streaming' to be True, got False",
+        "expected Agent Card capability 'push notifications' to be True, got False",
+        "expected Agent Card capability 'extended agent card' to be True, got False",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_requires_card_when_card_assertions_are_configured() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        raise AssertionError("scenario must not run")
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "card": {"skills": {"contains": "summarize"}},
+            "scenarios": [{"name": "smoke", "message": "hello"}],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Agent Card is required") as raised:
+        await run_with_sender(config, send_turn)
+    assert str(raised.value) == "Agent Card is required for configured card assertions"
