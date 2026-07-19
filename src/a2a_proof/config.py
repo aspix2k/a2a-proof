@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -42,9 +43,13 @@ def load_config(path: Path, environ: Mapping[str, str] | None = None) -> ProofCo
         raise ConfigError("configuration root must be a mapping")
 
     try:
-        expanded = _expand_environment(raw, environ or os.environ)
+        environment = os.environ if environ is None else environ
+        expanded = _expand_environment(raw, environment)
         config = ProofConfig.model_validate(expanded)
+        resolve_invariant_secrets(config, environment)
         config.bind_contract_dir(path.parent)
+        config.bind_contract_sha256(sha256(content).hexdigest())
+        config.bind_redaction_values(_header_environment_values(raw, environment))
         validate_config_files(config)
         return config
     except (ConfigError, FileInputError, ValidationError) as error:
@@ -141,6 +146,36 @@ def config_schema() -> dict[str, Any]:
         {"required": ["equals"]},
         {"required": ["contains_in_order"]},
     ]
+    latency = definitions["LatencyExpectation"]
+    for name in ("p50_seconds", "p95_seconds"):
+        latency["properties"][name].pop("default")
+    latency["anyOf"] = [
+        {"required": ["p50_seconds"]},
+        {"required": ["p95_seconds"]},
+    ]
+    text_invariant = definitions["TextInvariant"]
+    invariant_properties = text_invariant["properties"]
+    invariant_properties["not_contains"]["anyOf"] = [
+        {"type": "string", "minLength": 1, "maxLength": 100_000},
+        {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 100_000},
+            "maxItems": 100,
+        },
+    ]
+    environment_name = {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "maxLength": 200,
+    }
+    invariant_properties["not_contains_env"]["anyOf"] = [
+        environment_name,
+        {"type": "array", "items": environment_name, "maxItems": 100},
+    ]
+    text_invariant["anyOf"] = [
+        {"required": ["not_contains"]},
+        {"required": ["not_contains_env"]},
+    ]
     schema.update(
         {
             "$schema": JSON_SCHEMA_DIALECT,
@@ -150,6 +185,42 @@ def config_schema() -> dict[str, Any]:
         }
     )
     return schema
+
+
+def resolve_invariant_secrets(
+    config: ProofConfig,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    if config.invariants is None:
+        return {}
+    environment = os.environ if environ is None else environ
+    names = config.invariants.text.not_contains_env
+    missing = sorted(name for name in names if name not in environment)
+    if missing:
+        raise ConfigError(f"missing environment variable(s): {', '.join(missing)}")
+    empty = sorted(name for name in names if not environment[name])
+    if empty:
+        raise ConfigError(f"environment variable(s) must not be empty: {', '.join(empty)}")
+    return {name: environment[name] for name in names}
+
+
+def _header_environment_values(
+    raw: Mapping[str, Any],
+    environ: Mapping[str, str],
+) -> list[str]:
+    agent = raw.get("agent")
+    if not isinstance(agent, Mapping):
+        return []
+    headers = agent.get("headers")
+    if not isinstance(headers, Mapping):
+        return []
+    return [
+        environ[name]
+        for value in headers.values()
+        if isinstance(value, str)
+        for name in ENV_REFERENCE.findall(value)
+        if name in environ
+    ]
 
 
 def _expand_environment(value: Any, environ: Mapping[str, str]) -> Any:

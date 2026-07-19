@@ -631,7 +631,53 @@
       "description": "A relative path or file input object.",
       "title": "FileInput"
     },
+    "Invariants": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "$ref": "#/$defs/TextInvariant"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "Invariants",
+      "type": "object"
+    },
     "JsonValue": {},
+    "LatencyExpectation": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "p50_seconds"
+          ]
+        },
+        {
+          "required": [
+            "p95_seconds"
+          ]
+        }
+      ],
+      "properties": {
+        "p50_seconds": {
+          "description": "Maximum median trial duration.",
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "P50 Seconds",
+          "type": "number"
+        },
+        "p95_seconds": {
+          "description": "Maximum 95th-percentile trial duration.",
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "P95 Seconds",
+          "type": "number"
+        }
+      },
+      "title": "LatencyExpectation",
+      "type": "object"
+    },
     "Scenario": {
       "additionalProperties": false,
       "properties": {
@@ -665,6 +711,18 @@
           "maxItems": 20,
           "title": "Files",
           "type": "array"
+        },
+        "latency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LatencyExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Aggregate duration checks across completed trials."
         },
         "message": {
           "anyOf": [
@@ -864,6 +922,71 @@
       "title": "TextExpectation",
       "type": "object"
     },
+    "TextInvariant": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "not_contains"
+          ]
+        },
+        {
+          "required": [
+            "not_contains_env"
+          ]
+        }
+      ],
+      "properties": {
+        "case_sensitive": {
+          "default": true,
+          "description": "Apply case-sensitive checks.",
+          "title": "Case Sensitive",
+          "type": "boolean"
+        },
+        "not_contains": {
+          "anyOf": [
+            {
+              "maxLength": 100000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "maxLength": 100000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "Values forbidden in every response turn.",
+          "title": "Not Contains"
+        },
+        "not_contains_env": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "maxLength": 200,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "Environment variables whose values are forbidden in every response turn.",
+          "title": "Not Contains Env"
+        }
+      },
+      "title": "TextInvariant",
+      "type": "object"
+    },
     "Turn": {
       "additionalProperties": false,
       "properties": {
@@ -942,6 +1065,18 @@
     "defaults": {
       "$ref": "#/$defs/ScenarioDefaults",
       "description": "Defaults applied to scenarios that omit these fields."
+    },
+    "invariants": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Invariants"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Checks applied to every response turn."
     },
     "scenarios": {
       "description": "Behavior contracts to run.",

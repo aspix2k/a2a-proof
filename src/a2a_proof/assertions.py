@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import regex
 from a2a.types import AgentCard
@@ -15,6 +16,7 @@ from a2a_proof.models import (
     Expectation,
     FileExpectation,
     FilePartResult,
+    Invariants,
     StateSequenceExpectation,
     TextExpectation,
 )
@@ -103,6 +105,26 @@ def evaluate_card(expectation: AgentCardExpectation, card: AgentCard) -> list[st
                 failures.append(
                     f"expected Agent Card capability {label!r} to be {expected}, got {actual}"
                 )
+    return failures
+
+
+def evaluate_invariants(
+    invariants: Invariants,
+    outcome: TurnOutcome,
+    secret_values: Mapping[str, str],
+) -> list[str]:
+    expectation = invariants.text
+    actual = outcome.text if expectation.case_sensitive else outcome.text.casefold()
+    failures: list[str] = []
+    for index, forbidden in enumerate(expectation.not_contains, start=1):
+        needle = forbidden if expectation.case_sensitive else forbidden.casefold()
+        if needle in actual:
+            failures.append(f"response text violates global not_contains invariant {index}")
+    for name in expectation.not_contains_env:
+        value = secret_values[name]
+        needle = value if expectation.case_sensitive else value.casefold()
+        if needle in actual:
+            failures.append(f"response text contains value from environment variable {name!r}")
     return failures
 
 

@@ -59,6 +59,11 @@ card:
   input_modes:
     contains: application/pdf
 
+invariants:
+  text:
+    not_contains: ["system prompt", "BEGIN PRIVATE KEY"]
+    not_contains_env: A2A_AUTHORIZATION
+
 defaults:
   trials: 3
   pass_rate: 0.66
@@ -90,6 +95,9 @@ scenarios:
     message: Name a primary color
     trials: 5
     pass_rate: 0.8
+    latency:
+      p50_seconds: 5
+      p95_seconds: 10
     expect:
       text:
         matches: "(?i)red|blue|yellow"
@@ -146,6 +154,13 @@ and `auth_required` responses.
 output mode comparisons are case-insensitive. A failed card check stops the run with exit code `1`.
 `defaults` supplies `trials` and `pass_rate` only when a scenario omits that field.
 
+`invariants.text` applies to every response turn in every scenario. `not_contains` accepts public
+forbidden strings. `not_contains_env` accepts environment variable names and checks their values
+without storing those values in YAML or failure messages. Both fields accept one string or a list;
+set `case_sensitive: false` when case should not matter. Missing or empty variables make `check`
+and `run` fail before an agent request. If an invariant is violated, response text, data, and file
+metadata for that turn are removed before terminal, JSON, JUnit, or evidence rendering.
+
 Text assertions support `contains`, `not_contains`, `equals`, and Python regular expressions in
 `matches`. Strings are case-sensitive unless `case_sensitive: false` is set. Failed, rejected,
 and canceled tasks fail by default unless that state is explicitly expected.
@@ -154,6 +169,9 @@ and canceled tasks fail by default unless that state is explicitly expected.
 A2A response event observed by the client, which is useful for streaming responsiveness checks.
 
 `trials` repeats a scenario. `pass_rate` is the minimum successful fraction and defaults to `1`.
+The optional scenario-level `latency` block limits aggregate trial duration with `p50_seconds`,
+`p95_seconds`, or both. Percentiles use linear interpolation over completed trials; trials that end
+in execution errors are excluded and an all-error sample fails the latency contract.
 
 `states.equals` checks the complete observed state trajectory. `states.contains_in_order` checks a
 subsequence and allows intermediate states. Consecutive duplicate states are collapsed before
@@ -217,6 +235,19 @@ Echo
 1 scenario failed in 1ms
 ```
 
+For a bounded, redacted run bundle, pass `--evidence` with a new directory:
+
+```console
+a2a-proof run --evidence a2a-proof-evidence
+```
+
+The directory contains `manifest.json` and `failures.jsonl`. The manifest binds the run to SHA-256
+hashes of the loaded contract and Agent Card. JSONL records cover failed Agent Card and aggregate
+latency checks plus normalized state and response events for failed trials; the file is empty after
+a passing run. Resolved request-header values, their environment substitutions, and values named
+by `not_contains_env` are redacted before truncation; remote file URLs are never included. The
+command refuses to overwrite an existing evidence path.
+
 ## Official sample
 
 The repository includes a contract for the A2A project's
@@ -278,12 +309,18 @@ a2a-proof run [CONFIG]
 a2a-proof run --format json
 a2a-proof run --format junit --output a2a-proof.xml
 a2a-proof run --verbose
+a2a-proof run --evidence a2a-proof-evidence
+a2a-proof run --jobs 4
 a2a-proof run --scenario "capital of France"
 a2a-proof run --scenario smoke --scenario regression
 ```
 
 `--scenario` is repeatable and runs exact, case-sensitive scenario names in configuration order.
 Unknown names fail before connecting to the agent.
+
+`--jobs` runs trials within one scenario concurrently while keeping scenarios sequential and
+report order stable. It defaults to `1` and is capped at `32`; increase it only when the target can
+handle the additional load.
 
 Exit code `0` means all scenarios passed, `1` means a contract failed, and `2` means the command
 or configuration could not be executed. JUnit output is suitable for CI test reports.
@@ -297,7 +334,9 @@ file parts, 1 MB each of text and structured data, and 20 MB of inline raw data.
 URIs and 8,000 extension-header characters may be configured. Embedded JSON Schemas are limited to
 100 KB and 50 levels. Requests have a configurable timeout, text and data `matches` checks have a
 100 ms evaluation limit, HTTP redirects are disabled, external schema references are rejected, and
-file URLs are never fetched. Treat the tested agent and all returned content as untrusted input.
+file URLs are never fetched. Evidence records at most 100 failed trials and bounds text and
+structured-data previews to 100,000 characters each. Treat the tested agent and all returned
+content as untrusted input.
 
 ## Development
 

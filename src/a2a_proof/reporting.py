@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from a2a_proof.models import SuiteResult
+from a2a_proof.models import ScenarioResult, SuiteResult
 
 MAX_DIAGNOSTIC_CHARS = 2_000
 MILLISECONDS_PER_SECOND = 1_000
@@ -46,20 +46,7 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
     for scenario in result.scenarios:
         if scenario.passed:
             continue
-        console.print(Text(f"\n{_safe_text(scenario.name, single_line=True)}", style="bold red"))
-        for trial in scenario.trials:
-            if trial.passed:
-                continue
-            if trial.error:
-                console.print(Text(f"  trial {trial.index}: {_diagnostic(trial.error)}"))
-            for turn in trial.turns:
-                for failure in turn.failures:
-                    console.print(
-                        Text(f"  trial {trial.index}, turn {turn.index}: {_diagnostic(failure)}")
-                    )
-                if verbose and turn.text:
-                    response = _diagnostic(turn.text).replace("\n", "\n            ")
-                    console.print(Text(f"  response: {response}", style="dim"))
+        _render_scenario_failures(scenario, console, verbose=verbose)
 
     status = "passed" if result.passed else "failed"
     style = "bold green" if result.passed else "bold red"
@@ -75,20 +62,72 @@ def render_json(result: SuiteResult) -> str:
     return result.model_dump_json(indent=2)
 
 
+def _render_scenario_failures(
+    scenario: ScenarioResult,
+    console: Console,
+    *,
+    verbose: bool,
+) -> None:
+    console.print(Text(f"\n{_safe_text(scenario.name, single_line=True)}", style="bold red"))
+    if scenario.latency is not None:
+        for failure in scenario.latency.failures:
+            console.print(Text(f"  latency: {_diagnostic(failure)}"))
+    for trial in scenario.trials:
+        if trial.passed:
+            continue
+        if trial.error:
+            console.print(Text(f"  trial {trial.index}: {_diagnostic(trial.error)}"))
+        for turn in trial.turns:
+            for failure in turn.failures:
+                console.print(
+                    Text(f"  trial {trial.index}, turn {turn.index}: {_diagnostic(failure)}")
+                )
+            if verbose and turn.text:
+                response = _diagnostic(turn.text).replace("\n", "\n            ")
+                console.print(Text(f"  response: {response}", style="dim"))
+
+
 def render_junit(result: SuiteResult) -> str:
     trials = [trial for scenario in result.scenarios for trial in scenario.trials]
+    latency_results = [
+        scenario.latency for scenario in result.scenarios if scenario.latency is not None
+    ]
     card_failed = result.card is not None and not result.card.passed
-    failures = sum(not trial.passed and trial.error is None for trial in trials) + card_failed
-    errors = sum(trial.error is not None for trial in trials)
+    tolerated_trials = [
+        trial
+        for scenario in result.scenarios
+        if scenario.passed_trials >= scenario.required_trials
+        for trial in scenario.trials
+        if not trial.passed
+    ]
+    failures = (
+        sum(
+            not trial.passed
+            and trial.error is None
+            and scenario.passed_trials < scenario.required_trials
+            for scenario in result.scenarios
+            for trial in scenario.trials
+        )
+        + sum(not latency.passed for latency in latency_results)
+        + card_failed
+    )
+    errors = sum(
+        trial.error is not None and scenario.passed_trials < scenario.required_trials
+        for scenario in result.scenarios
+        for trial in scenario.trials
+    )
+    attributes = {
+        "name": "a2a-proof",
+        "tests": str(len(trials) + len(latency_results) + (result.card is not None)),
+        "failures": str(failures),
+        "errors": str(errors),
+        "time": f"{result.duration_ms / MILLISECONDS_PER_SECOND:.3f}",
+    }
+    if tolerated_trials:
+        attributes["skipped"] = str(len(tolerated_trials))
     suite = ET.Element(
         "testsuite",
-        {
-            "name": "a2a-proof",
-            "tests": str(len(trials) + (result.card is not None)),
-            "failures": str(failures),
-            "errors": str(errors),
-            "time": f"{result.duration_ms / MILLISECONDS_PER_SECOND:.3f}",
-        },
+        attributes,
     )
     if result.card is not None:
         case = ET.SubElement(
@@ -114,6 +153,9 @@ def render_junit(result: SuiteResult) -> str:
                     "time": f"{trial.duration_ms / MILLISECONDS_PER_SECOND:.3f}",
                 },
             )
+            if not trial.passed and scenario.passed_trials >= scenario.required_trials:
+                ET.SubElement(case, "skipped", {"message": "tolerated by pass_rate"})
+                continue
             if trial.error is not None:
                 message = _xml_text(_diagnostic(trial.error))
                 error = ET.SubElement(case, "error", {"message": message})
@@ -124,6 +166,20 @@ def render_junit(result: SuiteResult) -> str:
                 message = _xml_text(_diagnostic("; ".join(trial_failures)))
                 failure = ET.SubElement(case, "failure", {"message": message})
                 failure.text = _xml_text("\n".join(trial_failures))
+        if scenario.latency is not None:
+            case = ET.SubElement(
+                suite,
+                "testcase",
+                {
+                    "classname": "a2a-proof",
+                    "name": _xml_text(f"{scenario.name} [latency]"),
+                    "time": "0.000",
+                },
+            )
+            if not scenario.latency.passed:
+                message = _xml_text(_diagnostic("; ".join(scenario.latency.failures)))
+                failure = ET.SubElement(case, "failure", {"message": message})
+                failure.text = _xml_text("\n".join(scenario.latency.failures))
     ET.indent(suite)
     return ET.tostring(suite, encoding="unicode", xml_declaration=True)
 

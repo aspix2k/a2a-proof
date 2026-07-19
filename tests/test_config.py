@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -8,7 +9,7 @@ import pytest
 
 import a2a_proof.config as config_module
 import a2a_proof.models as models_module
-from a2a_proof.config import ConfigError, load_config, write_config
+from a2a_proof.config import ConfigError, _header_environment_values, load_config, write_config
 from a2a_proof.models import (
     _split_extension_parameter,
     _validate_extension_uris,
@@ -67,6 +68,23 @@ scenarios:
     config = load_config(path, {"TOKEN": "value: still a string"})
 
     assert config.agent.headers == {"Authorization": "Bearer value: still a string"}
+    assert config.redaction_values == ("value: still a string",)
+
+
+def test_collects_only_available_string_header_environment_values() -> None:
+    assert _header_environment_values({"agent": "invalid"}, {}) == []
+    assert _header_environment_values({"agent": {}}, {}) == []
+    assert _header_environment_values(
+        {
+            "agent": {
+                "headers": {
+                    "Authorization": "Bearer ${TOKEN} ${MISSING}",
+                    "Retries": 3,
+                }
+            }
+        },
+        {"TOKEN": "secret"},
+    ) == ["secret"]
 
 
 def test_reports_missing_environment_variable(tmp_path: Path) -> None:
@@ -107,6 +125,120 @@ scenarios:
     with pytest.raises(ConfigError) as raised:
         load_config(path, {})
     assert str(raised.value) == "missing environment variable(s): A_TOKEN, Z_TOKEN"
+
+
+def test_loads_global_invariants_and_binds_contract_digest(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+invariants:
+  text:
+    not_contains: system prompt
+    not_contains_env: API_TOKEN
+    case_sensitive: false
+scenarios:
+  - name: smoke
+    message: Hello
+""",
+    )
+
+    config = load_config(path, {"API_TOKEN": "secret"})
+
+    assert config.invariants is not None
+    assert config.invariants.text.not_contains == ["system prompt"]
+    assert config.invariants.text.not_contains_env == ["API_TOKEN"]
+    assert not config.invariants.text.case_sensitive
+    assert config.contract_sha256 == sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({}, "missing environment variable(s): A_TOKEN, Z_TOKEN"),
+        (
+            {"A_TOKEN": "", "Z_TOKEN": ""},
+            "environment variable(s) must not be empty: A_TOKEN, Z_TOKEN",
+        ),
+    ],
+)
+def test_rejects_unavailable_invariant_environment_values(
+    tmp_path: Path,
+    environment: dict[str, str],
+    message: str,
+) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+invariants:
+  text:
+    not_contains_env: [Z_TOKEN, A_TOKEN]
+scenarios:
+  - name: smoke
+    message: Hello
+""",
+    )
+
+    with pytest.raises(ConfigError) as raised:
+        load_config(path, environment)
+    assert str(raised.value) == message
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("text: {}", "text invariant must define not_contains or not_contains_env"),
+        ("text: {not_contains_env: invalid-name}", "String should match pattern"),
+    ],
+)
+def test_rejects_invalid_global_invariants(tmp_path: Path, text: str, message: str) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        f"""
+version: 1
+agent: {{url: https://example.com}}
+invariants:
+  {text}
+scenarios:
+  - name: smoke
+    message: Hello
+""",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path, {})
+
+
+@pytest.mark.parametrize(
+    ("latency", "message"),
+    [
+        ("{}", "latency must define p50_seconds or p95_seconds"),
+        ("{p95_seconds: null}", "latency percentile cannot be null"),
+        ("{p50_seconds: 0}", "Input should be greater than 0"),
+    ],
+)
+def test_rejects_invalid_latency_contract(
+    tmp_path: Path,
+    latency: str,
+    message: str,
+) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        f"""
+version: 1
+agent: {{url: https://example.com}}
+scenarios:
+  - name: smoke
+    message: Hello
+    latency: {latency}
+""",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path, {})
 
 
 def test_expands_environment_inside_sequences(tmp_path: Path) -> None:

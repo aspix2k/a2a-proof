@@ -7,6 +7,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.6.0 - 2026-07-19
+
+### Security
+
+- Kept invariant secrets out of YAML and reports by accepting environment variable names,
+  resolving their values only in memory, and redacting values case-insensitively before evidence
+  truncation or serialization.
+- Removed response text, structured data, and file metadata from every report when a global
+  invariant detects a leak in that turn.
+- Redacted resolved request-header values and their environment substitutions throughout evidence
+  records, and continued to omit remote file URLs. Evidence output is limited to 100 failed trials
+  and bounded response previews.
+- Wrote evidence through a private temporary directory with flushed files and an atomic final
+  rename; existing destinations are never overwritten.
+
+### Bug fixes
+
+- Made JUnit agree with `pass_rate`: failed trials within the accepted budget are now reported as
+  skipped instead of failing an otherwise successful CI report.
+- Made an explicitly empty environment mapping remain empty instead of silently falling back to
+  the process environment during configuration loading.
+
+### Features
+
+- Added suite-wide response invariants for forbidden text and environment-backed secret values.
+  They run on every response turn and identify the violated rule without printing the secret.
+- Added `--evidence DIR` for atomic, machine-readable run bundles. Each bundle records the contract
+  and Agent Card hashes, run metadata, failed-trial summaries, and a normalized response trace in
+  JSONL. Agent Card and aggregate latency failures are included even when no trial fails.
+- Added scenario-level `p50_seconds` and `p95_seconds` latency contracts across completed trials,
+  with aggregate results in terminal, JSON, and JUnit reports.
+- Added opt-in `--jobs` concurrency for repeated trials. Concurrency is bounded at 32, remains
+  sequential by default, and preserves deterministic result ordering.
+
+### Documentation
+
+- Documented global invariants, evidence contents and limits, percentile semantics, and safe
+  parallel trial execution.
+
+### Maintenance
+
+- Added evidence handling to mutation testing and extended the generated configuration schema for
+  invariants and aggregate latency contracts.
+
 ## 0.5.0 - 2026-07-19
 
 ### Features

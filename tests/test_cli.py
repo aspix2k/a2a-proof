@@ -254,7 +254,8 @@ def test_run_json_and_exit_status(tmp_path: Path, monkeypatch) -> None:
         ],
     )
 
-    async def run(config):
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         return suite
 
     monkeypatch.setattr(cli_module, "run", run)
@@ -263,6 +264,34 @@ def test_run_json_and_exit_status(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert json.loads(result.output)["passed"] is False
+
+
+def test_run_writes_requested_evidence_bundle(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    suite = SuiteResult(passed=True, duration_ms=1, scenarios=[])
+    evidence = tmp_path / "evidence"
+    captured: list[tuple[Path, SuiteResult]] = []
+
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 3
+        return suite
+
+    def write(directory, config, result, *, max_parallel_trials):
+        assert config.contract_sha256 is not None
+        assert max_parallel_trials == 3
+        captured.append((directory, result))
+
+    monkeypatch.setattr(cli_module, "run", run)
+    monkeypatch.setattr(cli_module, "write_evidence", write)
+
+    result = CliRunner().invoke(
+        main,
+        ["run", str(path), "--evidence", str(evidence), "--jobs", "3"],
+    )
+
+    assert result.exit_code == 0
+    assert captured == [(evidence, suite)]
 
 
 def test_run_requires_json_for_file_output(tmp_path: Path) -> None:
@@ -280,7 +309,8 @@ def test_run_writes_json_file_and_renders_terminal(tmp_path: Path, monkeypatch) 
     path.write_text(VALID_CONFIG, encoding="utf-8")
     suite = SuiteResult(passed=True, duration_ms=1, scenarios=[])
 
-    async def run(config):
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         return suite
 
     monkeypatch.setattr(cli_module, "run", run)
@@ -302,7 +332,8 @@ def test_run_writes_junit_file(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "proof.yaml"
     path.write_text(VALID_CONFIG, encoding="utf-8")
 
-    async def run(config):
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         return SuiteResult(passed=True, duration_ms=1, scenarios=[])
 
     monkeypatch.setattr(cli_module, "run", run)
@@ -332,7 +363,8 @@ scenarios:
     )
     selected: list[str] = []
 
-    async def run(config):
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         selected.extend(scenario.name for scenario in config.scenarios)
         return SuiteResult(passed=True, duration_ms=1, scenarios=[])
 
@@ -351,7 +383,8 @@ def test_run_rejects_unknown_scenario_before_connecting(tmp_path: Path, monkeypa
     path = tmp_path / "proof.yaml"
     path.write_text(VALID_CONFIG, encoding="utf-8")
 
-    async def run(config):
+    async def run(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         raise AssertionError("runner must not start")
 
     monkeypatch.setattr(cli_module, "run", run)
@@ -366,7 +399,8 @@ def test_run_reports_execution_and_output_errors(tmp_path: Path, monkeypatch) ->
     path = tmp_path / "proof.yaml"
     path.write_text(VALID_CONFIG, encoding="utf-8")
 
-    async def fail(config):
+    async def fail(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         raise RuntimeError("cannot connect")
 
     monkeypatch.setattr(cli_module, "run", fail)
@@ -375,7 +409,8 @@ def test_run_reports_execution_and_output_errors(tmp_path: Path, monkeypatch) ->
     assert execution.exit_code == 2
     assert "cannot connect" in execution.output
 
-    async def succeed(config):
+    async def succeed(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         return SuiteResult(passed=True, duration_ms=1, scenarios=[])
 
     def deny_write(self, content, encoding):
@@ -396,7 +431,8 @@ def test_run_reports_agent_connection_error_without_traceback(tmp_path: Path, mo
     path = tmp_path / "proof.yaml"
     path.write_text(VALID_CONFIG, encoding="utf-8")
 
-    async def fail(config):
+    async def fail(config, *, max_parallel_trials):
+        assert max_parallel_trials == 1
         raise AgentCardResolutionError("agent is unreachable")
 
     monkeypatch.setattr(cli_module, "run", fail)
