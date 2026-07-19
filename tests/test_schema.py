@@ -32,6 +32,7 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
                 {
                     "name": "structured",
                     "data": {"action": "forecast"},
+                    "latency": {"p50_seconds": 1, "p95_seconds": 2},
                     "files": [
                         "fixtures/report.pdf",
                         {"path": "fixtures/report.pdf", "media_type": "application/pdf"},
@@ -47,6 +48,12 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
             "card": {
                 "skills": {"contains": "summarize"},
                 "capabilities": {"streaming": True},
+            },
+            "invariants": {
+                "text": {
+                    "not_contains": "system prompt",
+                    "not_contains_env": "API_TOKEN",
+                }
             },
             "defaults": {"trials": 3, "pass_rate": 0.66},
         }
@@ -100,6 +107,19 @@ def test_schema_requires_nonempty_card_and_exclusive_state_sequence() -> None:
     }
 
     assert not validator.is_valid({**base, "card": {}})
+    assert not validator.is_valid({**base, "invariants": {"text": {}}})
+    assert not validator.is_valid(
+        {
+            **base,
+            "invariants": {"text": {"not_contains_env": "invalid-name"}},
+        }
+    )
+    assert not validator.is_valid(
+        {
+            **base,
+            "scenarios": [{"name": "smoke", "message": "Hello", "latency": {}}],
+        }
+    )
     assert not validator.is_valid(
         {
             **base,

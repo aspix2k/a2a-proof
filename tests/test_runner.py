@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -8,10 +9,17 @@ from uuid import UUID
 import pytest
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
+import a2a_proof.runner as runner_module
 from a2a_proof.files import PreparedFile
-from a2a_proof.models import DataPartResult, FilePartResult, ProofConfig
+from a2a_proof.models import (
+    DataPartResult,
+    FilePartResult,
+    LatencyExpectation,
+    ProofConfig,
+    TrialResult,
+)
 from a2a_proof.protocol import TurnOutcome
-from a2a_proof.runner import _format_error, run_with_sender
+from a2a_proof.runner import _evaluate_latency, _format_error, _percentile, run_with_sender
 
 
 def _config(scenarios: list[dict[str, object]]) -> ProofConfig:
@@ -124,6 +132,64 @@ async def test_stops_trial_after_failed_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_applies_global_invariants_to_every_turn() -> None:
+    responses = iter(["safe", "system prompt contains secret-value"])
+    calls = 0
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        nonlocal calls
+        calls += 1
+        return TurnOutcome(
+            state="completed",
+            text=next(responses),
+            task_id=None,
+            context_id=str(context["context_id"]),
+            duration_ms=1,
+            data=(DataPartResult(source="message", value={"secret": "secret-value"}),),
+            files=(FilePartResult(source="message", kind="url", filename="secret.txt"),),
+        )
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "invariants": {
+                "text": {
+                    "not_contains": "system prompt",
+                    "not_contains_env": "API_TOKEN",
+                }
+            },
+            "scenarios": [
+                {
+                    "name": "conversation",
+                    "turns": [{"message": "one"}, {"message": "two"}, {"message": "three"}],
+                }
+            ],
+        }
+    )
+
+    result = await run_with_sender(
+        config,
+        send_turn,
+        invariant_secrets={"API_TOKEN": "secret-value"},
+    )
+
+    assert not result.passed
+    assert calls == 2
+    turn = result.scenarios[0].trials[0].turns[1]
+    failures = turn.failures
+    assert failures == [
+        "response text violates global not_contains invariant 1",
+        "response text contains value from environment variable 'API_TOKEN'",
+    ]
+    assert "secret-value" not in " ".join(failures)
+    assert turn.response_redacted
+    assert turn.text == "[REDACTED: global invariant]"
+    assert turn.data == []
+    assert turn.files == []
+
+
+@pytest.mark.asyncio
 async def test_applies_trials_and_pass_rate() -> None:
     responses = iter(["yes", "no", "yes"])
 
@@ -155,6 +221,216 @@ async def test_applies_trials_and_pass_rate() -> None:
     assert result.passed
     assert scenario.passed_trials == 2
     assert scenario.required_trials == 2
+
+
+def test_evaluates_interpolated_trial_latency_percentiles() -> None:
+    trials = [
+        TrialResult(index=index, passed=True, duration_ms=duration)
+        for index, duration in enumerate([100, 200, 1_000], start=1)
+    ]
+
+    result = _evaluate_latency(
+        LatencyExpectation(p50_seconds=0.3, p95_seconds=0.9),
+        trials,
+    )
+
+    assert not result.passed
+    assert result.samples == 3
+    assert result.p50_ms == 200
+    assert result.p95_ms == 920
+    assert result.failures == ["expected p95 trial latency at most 0.9s, got 0.920s"]
+
+
+def test_latency_threshold_is_inclusive_and_reports_p50() -> None:
+    trials = [
+        TrialResult(index=index, passed=True, duration_ms=duration)
+        for index, duration in enumerate([100, 200, 1_000], start=1)
+    ]
+
+    passing = _evaluate_latency(
+        LatencyExpectation(p50_seconds=0.2, p95_seconds=0.92),
+        trials,
+    )
+    failing = _evaluate_latency(LatencyExpectation(p50_seconds=0.1999), trials)
+
+    assert passing.passed
+    assert passing.failures == []
+    assert failing.failures == ["expected p50 trial latency at most 0.1999s, got 0.200s"]
+
+
+def test_latency_requires_a_completed_trial() -> None:
+    result = _evaluate_latency(
+        LatencyExpectation(p95_seconds=1),
+        [TrialResult(index=1, passed=False, duration_ms=5, error="failed")],
+    )
+
+    assert not result.passed
+    assert result.samples == 0
+    assert result.p50_ms is None
+    assert result.p95_ms is None
+    assert result.failures == ["cannot evaluate latency because every trial errored"]
+    assert _percentile([123], 0.95) == 123
+
+
+@pytest.mark.asyncio
+async def test_applies_scenario_latency_contract() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "timed",
+                    "message": "hello",
+                    "trials": 2,
+                    "latency": {"p50_seconds": 1, "p95_seconds": 1},
+                }
+            ]
+        ),
+        send_turn,
+    )
+
+    latency = result.scenarios[0].latency
+    assert result.passed
+    assert latency is not None
+    assert latency.passed
+    assert latency.samples == 2
+
+
+@pytest.mark.asyncio
+async def test_runs_trials_with_bounded_parallelism_and_stable_result_order() -> None:
+    active = 0
+    maximum = 0
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config([{"name": "parallel", "message": "hello", "trials": 4}]),
+        send_turn,
+        max_parallel_trials=2,
+    )
+
+    assert result.passed
+    assert maximum == 2
+    assert [trial.index for trial in result.scenarios[0].trials] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_run_defaults_to_sequential_trials(monkeypatch: pytest.MonkeyPatch) -> None:
+    active = 0
+    maximum = 0
+
+    class Session:
+        card = AgentCard(name="Agent")
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def send_turn(self, message: str | None, **context: object) -> TurnOutcome:
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    async def connect(agent: object) -> Session:
+        return Session()
+
+    monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
+
+    result = await runner_module.run(
+        _config([{"name": "default", "message": "hello", "trials": 2}])
+    )
+
+    assert result.passed
+    assert maximum == 1
+
+
+@pytest.mark.asyncio
+async def test_default_trial_execution_is_sequential() -> None:
+    active = 0
+    maximum = 0
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config([{"name": "sequential", "message": "hello", "trials": 2}]),
+        send_turn,
+    )
+
+    assert result.passed
+    assert maximum == 1
+
+
+@pytest.mark.asyncio
+async def test_parallel_trials_receive_invariant_secrets() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        await asyncio.sleep(0)
+        return TurnOutcome("completed", "secret", None, str(context["context_id"]), 1)
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "invariants": {"text": {"not_contains_env": "API_TOKEN"}},
+            "scenarios": [{"name": "parallel", "message": "hello", "trials": 2}],
+        }
+    )
+
+    result = await run_with_sender(
+        config,
+        send_turn,
+        invariant_secrets={"API_TOKEN": "secret"},
+        max_parallel_trials=2,
+    )
+
+    assert not result.passed
+    assert all(trial.turns[0].response_redacted for trial in result.scenarios[0].trials)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [0, 33])
+async def test_rejects_invalid_parallel_trial_limit(value: int) -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        raise AssertionError("sender must not run")
+
+    with pytest.raises(ValueError, match="must be between 1 and 32"):
+        await run_with_sender(
+            _config([{"name": "smoke", "message": "hello"}]),
+            send_turn,
+            max_parallel_trials=value,
+        )
+
+
+@pytest.mark.asyncio
+async def test_accepts_maximum_parallel_trial_limit() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config([{"name": "smoke", "message": "hello"}]),
+        send_turn,
+        max_parallel_trials=32,
+    )
+
+    assert result.passed
 
 
 @pytest.mark.asyncio
@@ -410,6 +686,7 @@ async def test_agent_card_assertions_run_before_scenarios() -> None:
     assert result.passed
     assert result.card is not None
     assert result.card.passed
+    assert result.agent_card_sha256 is not None
     assert calls == 1
 
 

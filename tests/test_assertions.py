@@ -4,7 +4,7 @@ import pytest
 from a2a.types import AgentCard, AgentSkill
 
 import a2a_proof.assertions as assertions_module
-from a2a_proof.assertions import evaluate, evaluate_card
+from a2a_proof.assertions import evaluate, evaluate_card, evaluate_invariants
 from a2a_proof.models import (
     AgentCapabilitiesExpectation,
     AgentCardExpectation,
@@ -13,8 +13,10 @@ from a2a_proof.models import (
     Expectation,
     FileExpectation,
     FilePartResult,
+    Invariants,
     StateSequenceExpectation,
     TextExpectation,
+    TextInvariant,
 )
 from a2a_proof.protocol import TurnOutcome
 
@@ -56,6 +58,34 @@ def test_accepts_all_supported_text_assertions() -> None:
     )
 
     assert evaluate(expectation, _outcome()) == []
+
+
+def test_evaluates_global_text_invariants_without_exposing_secret_values() -> None:
+    invariants = Invariants(
+        text=TextInvariant(
+            not_contains="system prompt",
+            not_contains_env="API_TOKEN",
+            case_sensitive=False,
+        )
+    )
+
+    failures = evaluate_invariants(
+        invariants,
+        _outcome(text="SYSTEM PROMPT: SeCrEt"),
+        {"API_TOKEN": "secret"},
+    )
+
+    assert failures == [
+        "response text violates global not_contains invariant 1",
+        "response text contains value from environment variable 'API_TOKEN'",
+    ]
+    assert "secret" not in " ".join(failures).casefold()
+
+
+def test_accepts_response_that_satisfies_global_text_invariants() -> None:
+    invariants = Invariants(text=TextInvariant(not_contains=["private"], case_sensitive=True))
+
+    assert evaluate_invariants(invariants, _outcome(text="PRIVATE"), {}) == []
 
 
 def test_reports_each_failed_assertion() -> None:

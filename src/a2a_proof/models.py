@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Self
 
@@ -26,6 +27,7 @@ from pydantic.json_schema import SkipJsonSchema
 NonEmptyText = Annotated[str, Field(min_length=1, max_length=100_000)]
 StateName = Annotated[str, Field(min_length=1, max_length=64)]
 ExtensionUri = Annotated[str, Field(min_length=1, max_length=1_000)]
+EnvironmentName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=200)]
 MAX_INPUT_DATA_BYTES = 1_000_000
 MAX_INPUT_FILES = 20
 MAX_EXTENSIONS = 20
@@ -180,6 +182,40 @@ class TextExpectation(StrictModel):
             except regex.error as error:
                 raise ValueError(f"invalid regular expression {pattern!r}: {error}") from error
         return patterns
+
+
+class TextInvariant(StrictModel):
+    not_contains: list[NonEmptyText] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Values forbidden in every response turn.",
+    )
+    not_contains_env: list[EnvironmentName] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Environment variables whose values are forbidden in every response turn.",
+    )
+    case_sensitive: bool = Field(default=True, description="Apply case-sensitive checks.")
+
+    @field_validator(
+        "not_contains",
+        "not_contains_env",
+        mode="before",
+        json_schema_input_type=str | list[str],
+    )
+    @classmethod
+    def accept_single_value(cls, value: object) -> object:
+        return [value] if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_value(self) -> Self:
+        if not self.not_contains and not self.not_contains_env:
+            raise ValueError("text invariant must define not_contains or not_contains_env")
+        return self
+
+
+class Invariants(StrictModel):
+    text: TextInvariant
 
 
 class DataExpectation(StrictModel):
@@ -391,6 +427,32 @@ class Turn(StrictModel):
         return self
 
 
+class LatencyExpectation(StrictModel):
+    p50_seconds: (
+        Annotated[
+            float,
+            Field(gt=0, le=600, description="Maximum median trial duration."),
+        ]
+        | SkipJsonSchema[None]
+    ) = None
+    p95_seconds: (
+        Annotated[
+            float,
+            Field(gt=0, le=600, description="Maximum 95th-percentile trial duration."),
+        ]
+        | SkipJsonSchema[None]
+    ) = None
+
+    @model_validator(mode="after")
+    def require_percentile(self) -> Self:
+        configured = self.model_fields_set & {"p50_seconds", "p95_seconds"}
+        if not configured:
+            raise ValueError("latency must define p50_seconds or p95_seconds")
+        if any(getattr(self, name) is None for name in configured):
+            raise ValueError("latency percentile cannot be null")
+        return self
+
+
 class Scenario(StrictModel):
     name: Annotated[
         str,
@@ -421,6 +483,10 @@ class Scenario(StrictModel):
         gt=0,
         le=1,
         description="Minimum successful trial fraction.",
+    )
+    latency: LatencyExpectation | None = Field(
+        default=None,
+        description="Aggregate duration checks across completed trials.",
     )
 
     @field_validator(
@@ -537,6 +603,10 @@ class ProofConfig(StrictModel):
         default=None,
         description="Agent Card preflight checks.",
     )
+    invariants: Invariants | None = Field(
+        default=None,
+        description="Checks applied to every response turn.",
+    )
     defaults: ScenarioDefaults = Field(
         default_factory=ScenarioDefaults,
         description="Defaults applied to scenarios that omit these fields.",
@@ -546,6 +616,8 @@ class ProofConfig(StrictModel):
         Field(min_length=1, max_length=1_000, description="Behavior contracts to run."),
     ]
     _contract_dir: Path = PrivateAttr(default_factory=lambda: Path.cwd().resolve())
+    _contract_sha256: str | None = PrivateAttr(default=None)
+    _redaction_values: tuple[str, ...] = PrivateAttr(default=())
 
     @field_validator("scenarios")
     @classmethod
@@ -567,6 +639,20 @@ class ProofConfig(StrictModel):
 
     def bind_contract_dir(self, path: Path) -> None:
         self._contract_dir = path.resolve()
+
+    @property
+    def contract_sha256(self) -> str | None:
+        return self._contract_sha256
+
+    def bind_contract_sha256(self, digest: str) -> None:
+        self._contract_sha256 = digest
+
+    @property
+    def redaction_values(self) -> tuple[str, ...]:
+        return self._redaction_values
+
+    def bind_redaction_values(self, values: Sequence[str]) -> None:
+        self._redaction_values = tuple(dict.fromkeys(value for value in values if value))
 
     def resolved_scenarios(self) -> list[Scenario]:
         resolved: list[Scenario] = []
@@ -613,6 +699,7 @@ class TurnResult(StrictModel):
     text: str
     data: list[DataPartResult] = Field(default_factory=list)
     files: list[FilePartResult] = Field(default_factory=list)
+    response_redacted: bool = False
     failures: list[str] = Field(default_factory=list)
 
 
@@ -624,12 +711,21 @@ class TrialResult(StrictModel):
     error: str | None = None
 
 
+class LatencyResult(StrictModel):
+    passed: bool
+    samples: int
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    failures: list[str] = Field(default_factory=list)
+
+
 class ScenarioResult(StrictModel):
     name: str
     passed: bool
     passed_trials: int
     required_trials: int
     trials: list[TrialResult]
+    latency: LatencyResult | None = None
 
 
 class SuiteResult(StrictModel):
@@ -637,6 +733,7 @@ class SuiteResult(StrictModel):
     duration_ms: int
     card: CardResult | None = None
     scenarios: list[ScenarioResult]
+    agent_card_sha256: str | None = Field(default=None, exclude=True)
 
 
 def _validate_input_data_size(data: list[JsonValue]) -> None:

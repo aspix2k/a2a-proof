@@ -4,7 +4,14 @@ import xml.etree.ElementTree as ET
 
 from rich.console import Console
 
-from a2a_proof.models import CardResult, ScenarioResult, SuiteResult, TrialResult, TurnResult
+from a2a_proof.models import (
+    CardResult,
+    LatencyResult,
+    ScenarioResult,
+    SuiteResult,
+    TrialResult,
+    TurnResult,
+)
 from a2a_proof.reporting import (
     _diagnostic,
     _duration,
@@ -56,10 +63,14 @@ def test_indents_multiline_verbose_responses() -> None:
 
 
 def test_renders_machine_readable_json() -> None:
-    rendered = render_json(_result(passed=True))
+    result = _result(passed=True)
+    result.agent_card_sha256 = "private-evidence-metadata"
+
+    rendered = render_json(result)
 
     assert '"passed": true' in rendered
     assert '"scenario' in rendered
+    assert "private-evidence-metadata" not in rendered
 
 
 def test_renders_success_and_trial_error() -> None:
@@ -148,3 +159,74 @@ def test_renders_failed_agent_card_in_all_formats() -> None:
     passing_case = ET.fromstring(render_junit(passing)).find("testcase")
     assert passing_case is not None
     assert passing_case.find("failure") is None
+
+
+def test_renders_aggregate_latency_contract() -> None:
+    result = _result(passed=True)
+    result.passed = False
+    scenario = result.scenarios[0]
+    scenario.passed = False
+    scenario.latency = LatencyResult(
+        passed=False,
+        samples=3,
+        p50_ms=100,
+        p95_ms=920,
+        failures=["expected p95 trial latency at most 0.9s, got 0.920s"],
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_terminal(result, console, verbose=False)
+    root = ET.fromstring(render_junit(result))
+
+    assert "latency: expected p95" in console.export_text()
+    assert root.attrib["tests"] == "2"
+    assert root.attrib["failures"] == "1"
+    latency = root.findall("testcase")[1]
+    assert latency.attrib["name"] == "scenario[31m [latency]"
+    assert latency.find("failure") is not None
+
+    result.passed = True
+    scenario.passed = True
+    scenario.latency = LatencyResult(
+        passed=True,
+        samples=3,
+        p50_ms=100,
+        p95_ms=200,
+    )
+    passing_latency = ET.fromstring(render_junit(result)).findall("testcase")[1]
+    assert passing_latency.find("failure") is None
+
+
+def test_junit_marks_failures_within_pass_rate_as_skipped() -> None:
+    result = _result(passed=True)
+    scenario = result.scenarios[0]
+    scenario.required_trials = 1
+    scenario.trials.extend(
+        [
+            TrialResult(
+                index=2,
+                passed=False,
+                duration_ms=2,
+                turns=[
+                    TurnResult(
+                        index=1,
+                        passed=False,
+                        state="completed",
+                        duration_ms=2,
+                        text="wrong",
+                        failures=["wrong answer"],
+                    )
+                ],
+            ),
+            TrialResult(index=3, passed=False, duration_ms=1, error="connection failed"),
+        ]
+    )
+
+    root = ET.fromstring(render_junit(result))
+
+    assert root.attrib["tests"] == "3"
+    assert root.attrib["failures"] == "0"
+    assert root.attrib["errors"] == "0"
+    assert root.attrib["skipped"] == "2"
+    skipped = [case.find("skipped") for case in root.findall("testcase")[1:]]
+    assert all(item is not None for item in skipped)
