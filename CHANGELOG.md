@@ -7,6 +7,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-19
+
+### Features
+
+- Added outgoing A2A data parts to single-turn and multi-turn scenarios, including data-only
+  messages and multiple JSON values per turn.
+- Added validated A2A extension activation for JSON-RPC, HTTP+JSON, and gRPC. Runs fail before the
+  first agent request when configured and advertised capabilities do not match.
+- Made `init` enable required Agent Card extensions and validate the complete generated file before
+  writing it.
+
+### Security
+
+- Limited outgoing structured input to 100 parts and 1 MB per turn after environment expansion.
+- Rejected malformed, duplicate, oversized, and excessive extension configuration.
+
+### Compatibility
+
+- Preserved header-based `A2A-Extensions` configuration while normalizing it with the dedicated
+  `agent.extensions` field.
+
+### Documentation
+
+- Documented structured request data, extension negotiation, and the current A2A version boundary
+  with the official AP2 samples.
+
 ## 0.2.0 - 2026-07-19
 
 ### Features

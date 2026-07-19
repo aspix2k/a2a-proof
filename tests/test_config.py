@@ -7,7 +7,9 @@ from typing import cast
 import pytest
 
 import a2a_proof.config as config_module
+import a2a_proof.models as models_module
 from a2a_proof.config import ConfigError, load_config, write_config
+from a2a_proof.models import _split_extension_parameter, _validate_extension_uris
 
 
 def _write(path: Path, content: str) -> Path:
@@ -118,6 +120,188 @@ scenarios:
     assert config.scenarios[0].message == "Hello"
 
 
+def test_loads_structured_input_and_extensions(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent:
+  url: https://example.com
+  extensions:
+    - https://example.com/extensions/orders/v1
+scenarios:
+  - name: create order
+    message: Create this order
+    data:
+      order_id: ${ORDER_ID}
+      items: 2
+  - name: continue with data
+    turns:
+      - data:
+          approved: true
+      - message: Confirm
+        data:
+          receipt: requested
+""",
+    )
+
+    config = load_config(path, {"ORDER_ID": "order-42"})
+
+    assert config.agent.extensions == ["https://example.com/extensions/orders/v1"]
+    assert config.scenarios[0].data == [{"order_id": "order-42", "items": 2}]
+    assert config.scenarios[0].resolved_turns()[0].data == [{"order_id": "order-42", "items": 2}]
+    assert config.scenarios[1].resolved_turns()[0].message is None
+    assert config.scenarios[1].resolved_turns()[0].data == [{"approved": True}]
+    assert config.scenarios[1].resolved_turns()[1].data == [{"receipt": "requested"}]
+
+
+def test_loads_multiple_structured_input_parts(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: parts
+    data:
+      - {kind: order, id: 42}
+      - [one, two]
+      - true
+      - null
+""",
+    )
+
+    assert load_config(path).scenarios[0].data == [
+        {"kind": "order", "id": 42},
+        ["one", "two"],
+        True,
+        None,
+    ]
+
+
+def test_resolves_single_turn_structured_input() -> None:
+    scenario = models_module.Scenario.model_validate(
+        {
+            "name": "structured",
+            "message": "Create order",
+            "data": {"order_id": "order-42"},
+        }
+    )
+
+    assert scenario.resolved_turns()[0].model_dump() == {
+        "message": "Create order",
+        "data": [{"order_id": "order-42"}],
+        "expect": {"state": None, "text": None, "data": [], "max_seconds": None},
+    }
+
+
+def test_checks_structured_input_size_after_environment_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(models_module, "MAX_INPUT_DATA_BYTES", 10)
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios: [{name: data, data: {value: "${VALUE}"}}]
+""",
+    )
+
+    with pytest.raises(ConfigError, match="input data exceeds 10 bytes"):
+        load_config(path, {"VALUE": "expanded value"})
+
+
+def test_parses_legacy_extension_parameter() -> None:
+    assert _split_extension_parameter("https://example.com/one, https://example.com/two") == [
+        "https://example.com/one",
+        "https://example.com/two",
+    ]
+
+    with pytest.raises(ValueError, match="comma-separated extension URIs") as raised:
+        _split_extension_parameter("https://example.com/one,,https://example.com/two")
+    assert str(raised.value) == "A2A-Extensions must contain comma-separated extension URIs"
+
+
+def test_validates_extension_limits_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = [f"https://example.com/{index}" for index in range(models_module.MAX_EXTENSIONS)]
+    _validate_extension_uris(valid)
+
+    with pytest.raises(ValueError, match="at most 20 extension URIs") as excessive:
+        _validate_extension_uris([*valid, "https://example.com/excessive"])
+    assert str(excessive.value) == "configure at most 20 extension URIs"
+
+    with pytest.raises(ValueError, match="extension URIs must be unique") as duplicate:
+        _validate_extension_uris(["https://example.com/duplicate"] * 2)
+    assert str(duplicate.value) == "extension URIs must be unique"
+
+    uri = "https://example.com/extension"
+    monkeypatch.setattr(models_module, "MAX_EXTENSION_PARAMETER_CHARS", len(uri))
+    _validate_extension_uris([uri])
+
+    monkeypatch.setattr(models_module, "MAX_EXTENSION_PARAMETER_CHARS", len(uri) - 1)
+    with pytest.raises(ValueError, match="A2A-Extensions exceeds") as oversized:
+        _validate_extension_uris([uri])
+    assert str(oversized.value) == f"A2A-Extensions exceeds {len(uri) - 1} characters"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://example.com/with space",
+        "https://example.com/with,comma",
+        "https://example.com/non-ascii/é",
+        "not-a-uri",
+    ],
+)
+def test_reports_invalid_extension_uri_exactly(uri: str) -> None:
+    with pytest.raises(ValueError, match="invalid extension URI") as raised:
+        _validate_extension_uris([uri])
+    assert str(raised.value) == f"invalid extension URI: {uri!r}"
+
+
+def test_limits_combined_extension_configuration() -> None:
+    declared = [f"https://example.com/declared/{index}" for index in range(11)]
+    legacy = ",".join(f"https://example.com/legacy/{index}" for index in range(10))
+
+    with pytest.raises(ValueError, match="configure at most 20 extension URIs"):
+        models_module.AgentConfig(
+            url="https://example.com",
+            extensions=declared,
+            headers={"A2A-Extensions": legacy},
+        )
+
+
+def test_merges_declared_and_legacy_extension_configuration() -> None:
+    config = models_module.AgentConfig(
+        url="https://example.com",
+        extensions=["https://example.com/extensions/one"],
+        headers={
+            "A2A-Extensions": (
+                "https://example.com/extensions/one, https://example.com/extensions/two"
+            )
+        },
+    )
+
+    assert config.requested_extensions() == [
+        "https://example.com/extensions/one",
+        "https://example.com/extensions/two",
+    ]
+
+
+def test_limits_extension_parameter_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_EXTENSION_PARAMETER_CHARS", 10)
+
+    with pytest.raises(ValueError, match="A2A-Extensions exceeds 10 characters"):
+        models_module.AgentConfig(
+            url="https://example.com",
+            extensions=["https://example.com/extension"],
+        )
+
+
 def test_loads_single_structured_data_expectation(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "proof.yaml",
@@ -171,7 +355,66 @@ scenarios:
     message: one
     turns: [{message: two}]
 """,
-            "exactly one of message or turns",
+            "exactly one of single-turn input or turns",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios: [{name: empty}]
+""",
+            "scenario must contain message, data, or turns",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: empty turn
+    turns: [{expect: {state: completed}}]
+""",
+            "turn must contain message or data",
+        ),
+        (
+            """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: mixed shape
+    data: {value: one}
+    turns: [{message: two}]
+""",
+            "exactly one of single-turn input or turns",
+        ),
+        (
+            """
+version: 1
+agent:
+  url: https://example.com
+  extensions: ["https://example.com/ext", "https://example.com/ext"]
+scenarios: [{name: smoke, message: Hello}]
+""",
+            "extension URIs must be unique",
+        ),
+        (
+            """
+version: 1
+agent:
+  url: https://example.com
+  extensions: ["not a URI"]
+scenarios: [{name: smoke, message: Hello}]
+""",
+            "invalid extension URI",
+        ),
+        (
+            """
+version: 1
+agent:
+  url: https://example.com
+  headers: {A2A-Extensions: "https://example.com/one,,https://example.com/two"}
+scenarios: [{name: smoke, message: Hello}]
+""",
+            "comma-separated extension URIs",
         ),
         (
             """
@@ -299,6 +542,21 @@ scenarios:
     expect:
       text:
         contains: [{checks}]
+""",
+    )
+
+    with pytest.raises(ConfigError, match="List should have at most 100 items"):
+        load_config(path)
+
+
+def test_rejects_too_many_structured_input_parts(tmp_path: Path) -> None:
+    parts = ", ".join("null" for _ in range(101))
+    path = _write(
+        tmp_path / "proof.yaml",
+        f"""
+version: 1
+agent: {{url: https://example.com}}
+scenarios: [{{name: data, data: [{parts}]}}]
 """,
     )
 

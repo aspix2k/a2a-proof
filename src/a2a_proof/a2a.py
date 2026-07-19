@@ -11,13 +11,16 @@ import httpx
 from a2a.client import A2ACardResolver, ClientCallContext, ClientConfig, ClientFactory
 from a2a.client.client import Client
 from a2a.client.errors import AgentCardResolutionError
-from a2a.helpers import new_text_message
+from a2a.client.service_parameters import ServiceParametersFactory, with_a2a_extensions
+from a2a.extensions.common import HTTP_EXTENSION_HEADER
+from a2a.helpers import new_data_part, new_message, new_text_part
 from a2a.types import (
     AgentCard,
     Role,
     SendMessageRequest,
 )
 from a2a.utils.constants import TransportProtocol
+from pydantic import JsonValue
 
 from a2a_proof.models import AgentConfig
 from a2a_proof.protocol import ProtocolError, ResponseCollector, TurnOutcome
@@ -31,10 +34,11 @@ class A2ASession:
         client: Client,
         timeout: float,
         headers: Mapping[str, str] | None = None,
+        extensions: list[str] | None = None,
     ) -> None:
         self._client = client
         self._timeout = timeout
-        self._service_parameters = dict(headers or {})
+        self._service_parameters = _service_parameters(headers or {}, extensions or [])
 
     @classmethod
     async def connect(cls, config: AgentConfig) -> A2ASession:
@@ -50,6 +54,8 @@ class A2ASession:
                 str(config.url),
                 allow_cross_origin=config.allow_cross_origin_interfaces,
             )
+            extensions = config.requested_extensions()
+            _validate_card_extensions(card, extensions)
             bindings = _protocol_bindings(config.transport)
             client_config = ClientConfig(
                 streaming=True,
@@ -59,7 +65,7 @@ class A2ASession:
                 use_client_preference=config.transport != "auto",
             )
             client = ClientFactory(client_config).create(card)
-            return cls(client, config.timeout, config.headers)
+            return cls(client, config.timeout, config.headers, extensions)
         except BaseException:
             await http_client.aclose()
             raise
@@ -80,15 +86,20 @@ class A2ASession:
 
     async def send_turn(
         self,
-        text: str,
+        text: str | None,
         *,
+        data: list[JsonValue] | None = None,
         context_id: str,
         task_id: str | None,
     ) -> TurnOutcome:
-        message = new_text_message(text, role=Role.ROLE_USER)
-        message.context_id = context_id
-        if task_id is not None:
-            message.task_id = task_id
+        parts = [new_text_part(text)] if text is not None else []
+        parts.extend(new_data_part(value) for value in data or [])
+        message = new_message(
+            parts,
+            context_id=context_id,
+            task_id=task_id,
+            role=Role.ROLE_USER,
+        )
         request = SendMessageRequest(message=message)
         collector = ResponseCollector(context_id)
         started = perf_counter()
@@ -187,6 +198,39 @@ def _validate_card_interfaces(
                 f"Agent Card interface {interface.url!r} has a different origin; "
                 "set allow_cross_origin_interfaces: true only if you trust it"
             )
+
+
+def _service_parameters(headers: Mapping[str, str], extensions: list[str]) -> dict[str, str]:
+    parameters: dict[str, str] = {}
+    configured = list(extensions)
+    for name, value in headers.items():
+        if name.lower() == HTTP_EXTENSION_HEADER.lower():
+            configured.extend(item.strip() for item in value.split(","))
+        else:
+            parameters[name] = value
+    return ServiceParametersFactory.create_from(
+        parameters,
+        [with_a2a_extensions(list(dict.fromkeys(configured)))],
+    )
+
+
+def _validate_card_extensions(card: AgentCard, requested: list[str]) -> None:
+    advertised = {extension.uri for extension in card.capabilities.extensions}
+    required = {extension.uri for extension in card.capabilities.extensions if extension.required}
+    requested_set = set(requested)
+    missing_advertised = sorted(requested_set - advertised)
+    missing_required = sorted(required - requested_set)
+    failures: list[str] = []
+    if missing_advertised:
+        failures.append(
+            "Agent Card does not advertise requested extension(s): " + ", ".join(missing_advertised)
+        )
+    if missing_required:
+        failures.append(
+            "Agent Card requires unconfigured extension(s): " + ", ".join(missing_required)
+        )
+    if failures:
+        raise ProtocolError("; ".join(failures))
 
 
 def _network_origin(url: str) -> tuple[bool, str, int]:

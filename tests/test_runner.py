@@ -44,7 +44,7 @@ async def test_runs_multi_turn_scenario_with_task_continuation() -> None:
     )
     calls: list[dict[str, object]] = []
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         calls.append({"message": message, **context})
         return next(values)
 
@@ -75,6 +75,7 @@ async def test_runs_multi_turn_scenario_with_task_continuation() -> None:
     UUID(str(calls[0]["context_id"]))
     assert calls[1] == {
         "message": "Moscow",
+        "data": [],
         "context_id": "server-context",
         "task_id": "task",
     }
@@ -84,7 +85,7 @@ async def test_runs_multi_turn_scenario_with_task_continuation() -> None:
 async def test_stops_trial_after_failed_turn() -> None:
     calls = 0
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         nonlocal calls
         calls += 1
         return TurnOutcome(
@@ -121,7 +122,7 @@ async def test_stops_trial_after_failed_turn() -> None:
 async def test_applies_trials_and_pass_rate() -> None:
     responses = iter(["yes", "no", "yes"])
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         return TurnOutcome(
             state="completed",
             text=next(responses),
@@ -153,7 +154,7 @@ async def test_applies_trials_and_pass_rate() -> None:
 
 @pytest.mark.asyncio
 async def test_converts_sender_exception_to_trial_error() -> None:
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         raise RuntimeError("connection closed")
 
     result = await run_with_sender(
@@ -174,7 +175,7 @@ async def test_continues_auth_required_task() -> None:
     )
     calls: list[dict[str, object]] = []
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         calls.append(context)
         return next(values)
 
@@ -194,7 +195,7 @@ async def test_continues_auth_required_task() -> None:
     )
 
     assert result.passed
-    assert calls[1] == {"context_id": "server-context", "task_id": "task"}
+    assert calls[1] == {"data": [], "context_id": "server-context", "task_id": "task"}
 
 
 @pytest.mark.asyncio
@@ -202,7 +203,7 @@ async def test_records_suite_and_trial_durations(monkeypatch: pytest.MonkeyPatch
     timestamps = iter([10.0, 10.5, 11.5, 12.0])
     monkeypatch.setattr("a2a_proof.runner.perf_counter", lambda: next(timestamps))
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
 
     result = await run_with_sender(
@@ -222,7 +223,7 @@ async def test_preserves_completed_turns_and_duration_on_error(
     monkeypatch.setattr("a2a_proof.runner.perf_counter", lambda: next(timestamps))
     calls = 0
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -260,7 +261,7 @@ async def test_preserves_structured_data_in_turn_results() -> None:
         artifact_name="forecast",
     )
 
-    async def send_turn(message: str, **context: object) -> TurnOutcome:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         return TurnOutcome(
             "completed",
             "",
@@ -285,3 +286,21 @@ async def test_preserves_structured_data_in_turn_results() -> None:
 
     assert result.passed
     assert result.scenarios[0].trials[0].turns[0].data == [part]
+
+
+@pytest.mark.asyncio
+async def test_sends_structured_input_without_text() -> None:
+    calls: list[dict[str, object]] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        calls.append({"message": message, **context})
+        return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config([{"name": "structured", "data": {"order_id": "order-42"}}]),
+        send_turn,
+    )
+
+    assert result.passed
+    assert calls[0]["message"] is None
+    assert calls[0]["data"] == [{"order_id": "order-42"}]

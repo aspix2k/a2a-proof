@@ -13,7 +13,7 @@ from rich.console import Console
 
 from a2a_proof.a2a import discover_agent
 from a2a_proof.config import ConfigError, load_config, write_config
-from a2a_proof.models import AgentConfig
+from a2a_proof.models import AgentConfig, ProofConfig
 from a2a_proof.reporting import render_json, render_junit, render_terminal
 from a2a_proof.runner import run
 
@@ -91,6 +91,14 @@ def init_command(
             agent_data["allow_cross_origin_interfaces"] = True
         if references:
             agent_data["headers"] = references
+        required_extensions = list(
+            dict.fromkeys(
+                extension.uri for extension in card.capabilities.extensions if extension.required
+            )
+        )
+        if required_extensions:
+            agent_data["extensions"] = required_extensions
+        ProofConfig.model_validate(data)
         write_config(output, data, force=force)
     except (A2AClientError, ConfigError, ValidationError, OSError, RuntimeError) as error:
         raise ProofCommandError(str(error)) from error

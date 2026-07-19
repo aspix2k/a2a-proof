@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from a2a.client.errors import AgentCardResolutionError
-from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
 from click.testing import CliRunner
 
 import a2a_proof.cli as cli_module
@@ -182,6 +182,58 @@ def test_init_can_explicitly_allow_cross_origin_interfaces(
 
     assert result.exit_code == 0
     assert "allow_cross_origin_interfaces: true" in output.read_text(encoding="utf-8")
+
+
+def test_init_enables_required_agent_card_extensions(tmp_path: Path, monkeypatch) -> None:
+    async def discover(config):
+        return AgentCard(
+            name="Agent",
+            capabilities=AgentCapabilities(
+                extensions=[
+                    AgentExtension(uri="https://example.com/optional"),
+                    AgentExtension(uri="https://example.com/required", required=True),
+                    AgentExtension(uri="https://example.com/required", required=True),
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(cli_module, "discover_agent", discover)
+    output = tmp_path / "proof.yaml"
+
+    result = CliRunner().invoke(
+        main,
+        ["init", "https://example.com", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    content = output.read_text(encoding="utf-8")
+    assert content.count("https://example.com/required") == 1
+    assert "https://example.com/optional" not in content
+
+
+def test_init_refuses_invalid_required_agent_card_extension(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def discover(config):
+        return AgentCard(
+            name="Agent",
+            capabilities=AgentCapabilities(
+                extensions=[AgentExtension(uri="not-a-uri", required=True)]
+            ),
+        )
+
+    monkeypatch.setattr(cli_module, "discover_agent", discover)
+    output = tmp_path / "proof.yaml"
+
+    result = CliRunner().invoke(
+        main,
+        ["init", "https://example.com", "--output", str(output)],
+    )
+
+    assert result.exit_code == 2
+    assert "invalid extension URI" in result.output
+    assert not output.exists()
 
 
 def test_run_json_and_exit_status(tmp_path: Path, monkeypatch) -> None:
