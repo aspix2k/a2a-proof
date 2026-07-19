@@ -26,7 +26,7 @@ A2A 1.0 and supports JSON-RPC, HTTP+JSON, and gRPC.
 ## Quick start
 
 ```console
-uv tool install git+https://github.com/aspix2k/a2a-proof@v0.2.0
+uv tool install git+https://github.com/aspix2k/a2a-proof@v0.3.0
 a2a-proof init https://agent.example.com
 a2a-proof run
 ```
@@ -44,6 +44,8 @@ agent:
   url: https://agent.example.com
   timeout: 30
   transport: auto
+  extensions:
+    - https://agent.example.com/extensions/structured-input/v1
   headers:
     Authorization: ${A2A_AUTHORIZATION}
 
@@ -78,7 +80,10 @@ scenarios:
         matches: "(?i)red|blue|yellow"
 
   - name: structured forecast
-    message: Return the forecast as structured data
+    message: Return a structured forecast
+    data:
+      action: forecast
+      city: Paris
     expect:
       data:
         - source: artifact
@@ -90,8 +95,9 @@ scenarios:
           equals: 21
 ```
 
-Each scenario uses either `message` or `turns`. Multi-turn scenarios preserve the A2A context
-and continue the task after `input_required` and `auth_required` responses.
+Each scenario uses a single turn or `turns`. A turn may contain `message`, `data`, or both. A mapping
+under `data` creates one A2A data part; use a list to send several parts. Multi-turn scenarios
+preserve the A2A context and continue the task after `input_required` and `auth_required` responses.
 
 Text assertions support `contains`, `not_contains`, `equals`, and Python regular expressions in
 `matches`. Strings are case-sensitive unless `case_sensitive: false` is set. Failed, rejected,
@@ -172,6 +178,23 @@ intentionally separates them, set `allow_cross_origin_interfaces: true` or pass
 Discovery uses `/.well-known/agent-card.json` and falls back to the legacy
 `/.well-known/agent.json` path after a 404. Use `card_path` to require a custom path.
 
+## Protocol extensions
+
+List extension URIs under `agent.extensions`. `a2a-proof` checks them against the Agent Card and
+activates them on every JSON-RPC, HTTP+JSON, or gRPC request. Execution stops before the first agent
+request if a configured extension is not advertised or a required extension is not configured.
+`init` adds required extensions automatically.
+
+Existing configurations that set `A2A-Extensions` under `headers` remain valid. The dedicated
+`extensions` field is preferred because it is explicit and lets `init` populate required
+capabilities.
+
+Extension activation does not implement the extension's semantics. In particular, this release
+does not add AP2 mandate assertions. The current official AP2 Python samples pin
+[`a2a-sdk==0.3.24`](https://github.com/google-agentic-commerce/AP2/blob/main/code/samples/python/pyproject.toml),
+while `a2a-proof` targets A2A 1.0, so those sample agents are not compatible wire-level test targets
+yet.
+
 ## Commands and output
 
 ```console
@@ -187,11 +210,12 @@ or configuration could not be executed. JUnit output is suitable for CI test rep
 
 ## Safety limits
 
-Per turn, responses are limited to 1,000 stream events, 1,000 structured data parts, and 1 MB each
-of text, structured data, and inline raw data. Requests have a configurable timeout,
-regular-expression checks have a 100 ms evaluation limit, HTTP redirects are disabled, and
-artifact URLs are never fetched. Treat the tested agent and all returned content as untrusted
-input.
+Per turn, outgoing structured input is limited to 100 parts and 1 MB. Responses are limited to
+1,000 stream events, 1,000 structured data parts, and 1 MB each of text, structured data, and inline
+raw data. At most 20 extension URIs and 8,000 extension-header characters may be configured.
+Requests have a configurable timeout, regular-expression checks have a 100 ms evaluation limit,
+HTTP redirects are disabled, and artifact URLs are never fetched. Treat the tested agent and all
+returned content as untrusted input.
 
 ## Development
 

@@ -11,12 +11,15 @@ import grpc
 import httpx
 import pytest
 import respx
+from a2a.helpers import get_data_parts
 from a2a.types import Message, Part, Role, SendMessageRequest, SendMessageResponse, a2a_pb2_grpc
 from click.testing import CliRunner
 
 from a2a_proof.cli import main
 from a2a_proof.models import ProofConfig
 from a2a_proof.runner import run
+
+TEST_EXTENSION = "https://example.com/extensions/structured-input/v1"
 
 
 class _AgentHandler(BaseHTTPRequestHandler):
@@ -46,8 +49,11 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         "protocolVersion": "1.0",
                     },
                 ],
-                "capabilities": {"streaming": False},
-                "defaultInputModes": ["text/plain"],
+                "capabilities": {
+                    "streaming": False,
+                    "extensions": [{"uri": TEST_EXTENSION}],
+                },
+                "defaultInputModes": ["text/plain", "application/json"],
                 "defaultOutputModes": ["text/plain"],
                 "skills": [
                     {
@@ -69,7 +75,11 @@ class _AgentHandler(BaseHTTPRequestHandler):
         payload = request["params"] if self.path == "/a2a" else request
         message = payload["message"]
         text = "".join(part.get("text", "") for part in message["parts"])
-        if text == "structured":
+        data = [part["data"] for part in message["parts"] if "data" in part]
+        if data and self.headers.get("A2A-Extensions") != TEST_EXTENSION:
+            self._send_json(400, {"error": "missing extension activation"})
+            return
+        if data and data[0].get("action") == "forecast":
             result = {
                 "task": {
                     "id": "task",
@@ -87,6 +97,15 @@ class _AgentHandler(BaseHTTPRequestHandler):
                             ],
                         }
                     ],
+                }
+            }
+        elif data:
+            result = {
+                "message": {
+                    "messageId": "response",
+                    "contextId": message["contextId"],
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": f"data: {data[0]['value']}"}],
                 }
             }
         else:
@@ -126,12 +145,14 @@ class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
         )
         self.metadata = {key: value for key, value in metadata if isinstance(value, str)}
         text = "".join(part.text for part in request.message.parts if part.HasField("text"))
+        data = get_data_parts(request.message.parts)
+        response = f"data: {data[0]['value']}" if data else f"echo: {text}"
         return SendMessageResponse(
             message=Message(
                 message_id="response",
                 context_id=request.message.context_id,
                 role=Role.ROLE_AGENT,
-                parts=[Part(text=f"echo: {text}")],
+                parts=[Part(text=response)],
             )
         )
 
@@ -178,12 +199,16 @@ async def test_runs_real_http_json_exchange(agent_url: str) -> None:
     config = ProofConfig.model_validate(
         {
             "version": 1,
-            "agent": {"url": agent_url, "transport": "HTTP+JSON"},
+            "agent": {
+                "url": agent_url,
+                "transport": "HTTP+JSON",
+                "extensions": [TEST_EXTENSION],
+            },
             "scenarios": [
                 {
-                    "name": "echo",
-                    "message": "Hello",
-                    "expect": {"text": {"equals": "echo: Hello"}},
+                    "name": "structured echo",
+                    "data": {"value": "Hello"},
+                    "expect": {"text": {"equals": "data: Hello"}},
                 }
             ],
         }
@@ -197,11 +222,11 @@ async def test_runs_structured_artifact_contract_over_real_jsonrpc(agent_url: st
     config = ProofConfig.model_validate(
         {
             "version": 1,
-            "agent": {"url": agent_url},
+            "agent": {"url": agent_url, "extensions": [TEST_EXTENSION]},
             "scenarios": [
                 {
                     "name": "forecast",
-                    "message": "structured",
+                    "data": {"action": "forecast", "city": "Paris"},
                     "expect": {
                         "state": "completed",
                         "data": [
@@ -249,8 +274,11 @@ async def test_runs_real_grpc_exchange() -> None:
                         "protocolVersion": "1.0",
                     }
                 ],
-                "capabilities": {"streaming": False},
-                "defaultInputModes": ["text/plain"],
+                "capabilities": {
+                    "streaming": False,
+                    "extensions": [{"uri": TEST_EXTENSION}],
+                },
+                "defaultInputModes": ["text/plain", "application/json"],
                 "defaultOutputModes": ["text/plain"],
                 "skills": [],
             },
@@ -265,12 +293,13 @@ async def test_runs_real_grpc_exchange() -> None:
                 "grpc_tls": False,
                 "allow_cross_origin_interfaces": True,
                 "headers": {"Authorization": "Bearer secret"},
+                "extensions": [TEST_EXTENSION],
             },
             "scenarios": [
                 {
-                    "name": "echo",
-                    "message": "Hello",
-                    "expect": {"text": {"equals": "echo: Hello"}},
+                    "name": "structured echo",
+                    "data": {"value": "Hello"},
+                    "expect": {"text": {"equals": "data: Hello"}},
                 }
             ],
         }
@@ -279,6 +308,7 @@ async def test_runs_real_grpc_exchange() -> None:
     try:
         assert (await run(config)).passed
         assert service.metadata["authorization"] == "Bearer secret"
+        assert service.metadata["a2a-extensions"] == TEST_EXTENSION
     finally:
         await server.stop(None)
 

@@ -60,6 +60,7 @@ async def _run_trial(index: int, scenario: Scenario, send_turn: SendTurn) -> Tri
         for turn_index, turn in enumerate(scenario.resolved_turns(), start=1):
             outcome = await send_turn(
                 turn.message,
+                data=turn.data,
                 context_id=context_id,
                 task_id=task_id,
             )

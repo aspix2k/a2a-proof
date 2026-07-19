@@ -3,16 +3,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 import respx
 from a2a.client.client import Client, ClientCallContext
 from a2a.client.errors import AgentCardResolutionError
-from a2a.helpers import get_message_text, new_data_artifact, new_data_message, new_data_part
+from a2a.helpers import (
+    get_data_parts,
+    get_message_text,
+    new_data_artifact,
+    new_data_message,
+    new_data_part,
+)
 from a2a.types import (
+    AgentCapabilities,
     AgentCard,
+    AgentExtension,
     AgentInterface,
     Artifact,
     Message,
@@ -31,8 +39,10 @@ import a2a_proof.a2a as a2a_module
 import a2a_proof.protocol as protocol_module
 from a2a_proof.a2a import (
     A2ASession,
+    _grpc_channel,
     _grpc_target,
     _protocol_bindings,
+    _validate_card_extensions,
     _validate_card_interfaces,
     discover_agent,
 )
@@ -596,6 +606,39 @@ async def test_session_sends_context_and_closes_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_sends_structured_parts_and_normalizes_extensions() -> None:
+    client = _FakeClient([StreamResponse(message=_agent_message("accepted"))])
+    session = A2ASession(
+        cast(Client, client),
+        timeout=2,
+        headers={
+            "Authorization": "Bearer secret",
+            "a2a-extensions": "https://example.com/extensions/one",
+        },
+        extensions=["https://example.com/extensions/two"],
+    )
+
+    await session.send_turn(
+        None,
+        data=[{"order_id": "order-42"}, ["one", "two"]],
+        context_id="context",
+        task_id=None,
+    )
+
+    assert client.request is not None
+    assert client.context is not None
+    assert get_message_text(client.request.message) == ""
+    assert get_data_parts(client.request.message.parts) == [
+        {"order_id": "order-42"},
+        ["one", "two"],
+    ]
+    assert client.context.service_parameters == {
+        "Authorization": "Bearer secret",
+        "A2A-Extensions": ("https://example.com/extensions/one,https://example.com/extensions/two"),
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_reports_timeout() -> None:
     client = _FakeClient([], delay=0.05)
     session = A2ASession(cast(Client, client), timeout=0.001)
@@ -654,6 +697,31 @@ def test_maps_supported_protocol_bindings() -> None:
     assert _protocol_bindings("auto") == ["JSONRPC", "HTTP+JSON", "GRPC"]
 
 
+def test_validates_requested_and_required_card_extensions() -> None:
+    card = AgentCard(
+        name="Agent",
+        capabilities=AgentCapabilities(
+            extensions=[
+                AgentExtension(uri="https://example.com/optional"),
+                AgentExtension(uri="https://example.com/required", required=True),
+            ]
+        ),
+    )
+
+    _validate_card_extensions(
+        card,
+        ["https://example.com/optional", "https://example.com/required"],
+    )
+
+    with pytest.raises(ProtocolError) as raised:
+        _validate_card_extensions(card, ["https://example.com/unadvertised"])
+    assert str(raised.value) == (
+        "Agent Card does not advertise requested extension(s): "
+        "https://example.com/unadvertised; Agent Card requires unconfigured extension(s): "
+        "https://example.com/required"
+    )
+
+
 def test_normalizes_and_validates_grpc_targets() -> None:
     assert _grpc_target("https://agent.example.com:443") == "agent.example.com:443"
     assert _grpc_target("dns:///agent.example.com:443") == "dns:///agent.example.com:443"
@@ -662,6 +730,17 @@ def test_normalizes_and_validates_grpc_targets() -> None:
         _grpc_target("grpcs://agent.example.com/service")
     with pytest.raises(ProtocolError, match="invalid gRPC interface URL"):
         _grpc_target("https://user:password@agent.example.com")
+
+
+def test_builds_secure_grpc_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    credentials = object()
+    channel = object()
+    secure_channel = Mock(return_value=channel)
+    monkeypatch.setattr(a2a_module.grpc, "ssl_channel_credentials", lambda: credentials)
+    monkeypatch.setattr(a2a_module.grpc.aio, "secure_channel", secure_channel)
+
+    assert _grpc_channel("https://agent.example.com:443", tls=True) is channel
+    secure_channel.assert_called_once_with("agent.example.com:443", credentials)
 
 
 def test_rejects_cross_origin_agent_interfaces_by_default() -> None:
