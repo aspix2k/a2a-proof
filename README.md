@@ -10,10 +10,23 @@ Black-box contract tests for A2A agents.
 `a2a-proof` discovers an agent, sends real A2A requests, and checks the observable result.
 It does not need the agent's source code, framework, prompts, or model provider.
 
+## Scope
+
+`a2a-proof` complements the official A2A testing tools:
+
+- [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol conformance.
+- [A2A Inspector](https://github.com/a2aproject/a2a-inspector) supports interactive inspection
+  and debugging.
+- `a2a-proof` runs repeatable, user-defined behavior checks locally or in CI.
+
+Use the TCK to verify that an implementation follows the A2A specification. Use `a2a-proof` to
+verify that a deployed agent still behaves as your application expects. The current release targets
+A2A 1.0 and supports JSON-RPC, HTTP+JSON, and gRPC.
+
 ## Quick start
 
 ```console
-uv tool install git+https://github.com/aspix2k/a2a-proof@v0.1.0
+uv tool install git+https://github.com/aspix2k/a2a-proof@v0.1.1
 a2a-proof init https://agent.example.com
 a2a-proof run
 ```
@@ -73,6 +86,38 @@ Text assertions support `contains`, `not_contains`, `equals`, and Python regular
 and canceled tasks fail by default unless that state is explicitly expected.
 
 `trials` repeats a scenario. `pass_rate` is the minimum successful fraction and defaults to `1`.
+
+## Output
+
+A passing scenario produces a compact summary:
+
+```console
+$ a2a-proof run
+┏━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┳━━━━━━┓
+┃ Result ┃ Scenario ┃ Trials ┃ Time ┃
+┡━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━╇━━━━━━┩
+│ PASS   │ Echo     │    1/1 │  2ms │
+└────────┴──────────┴────────┴──────┘
+
+1 scenario passed in 2ms
+```
+
+A failed assertion identifies the scenario and returns exit code `1`:
+
+```console
+$ a2a-proof run --verbose
+┏━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┳━━━━━━┓
+┃ Result ┃ Scenario ┃ Trials ┃ Time ┃
+┡━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━╇━━━━━━┩
+│ FAIL   │ Echo     │    0/1 │  1ms │
+└────────┴──────────┴────────┴──────┘
+
+Echo
+  trial 1, turn 1: response text is not equal to the expected value
+  response: echo: Hello
+
+1 scenario failed in 1ms
+```
 
 ## Authentication
 

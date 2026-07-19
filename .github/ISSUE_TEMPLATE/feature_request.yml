@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a concrete contract-testing use case
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What agent behavior cannot be checked today?
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed contract
+      description: Show the configuration or command you would expect to write.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: How are you testing this behavior now?
