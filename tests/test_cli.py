@@ -39,6 +39,24 @@ def test_check_returns_two_for_invalid_configuration(tmp_path: Path) -> None:
     assert "configuration root must be a mapping" in result.output
 
 
+def test_check_reports_missing_ap2_runtime_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+
+    def unavailable(_config: ProofConfig) -> None:
+        raise cli_module.AP2Error("official AP2 SDK is unavailable")
+
+    monkeypatch.setattr(cli_module, "ensure_ap2_sdk", unavailable)
+
+    result = CliRunner().invoke(main, ["check", str(path)])
+
+    assert result.exit_code == 2
+    assert result.output == "Error: official AP2 SDK is unavailable\n"
+
+
 def test_init_writes_environment_reference_without_secret(
     tmp_path: Path,
     monkeypatch,

@@ -52,8 +52,8 @@ List extension URIs under `agent.extensions`. `a2a-proof` validates them against
 activates them on every transport. `init` adds required extensions automatically. The legacy
 `A2A-Extensions` header remains supported, but the dedicated field is preferred.
 
-Extension activation does not implement extension semantics. In particular, this release does not
-add AP2 mandate assertions.
+Extension activation is transport-level. AP2 mandate semantics require the optional setup in
+[AP2 mandate contracts](ap2.md).
 
 ## Evidence
 

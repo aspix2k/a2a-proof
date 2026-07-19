@@ -1,6 +1,6 @@
 [project]
 name = "a2a-proof"
-version = "0.7.0"
+version = "0.8.0"
 description = "Black-box contract tests for A2A agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ dependencies = [
   "click>=8.4.2,<9",
   "httpx>=0.28.1,<1",
   "jsonschema>=4.26,<5",
-  "pydantic>=2.13.4,<3",
+  "pydantic>=2.12.5,<3",
   "pyyaml>=6.0.3,<7",
   "regex>=2026.7.19,<2027",
   "rich>=15,<16",
@@ -92,6 +92,7 @@ python-version = "3.11"
 [tool.mutmut]
 also_copy = ["schema/"]
 only_mutate = [
+  "src/a2a_proof/ap2.py",
   "src/a2a_proof/assertions.py",
   "src/a2a_proof/config.py",
   "src/a2a_proof/diffing.py",

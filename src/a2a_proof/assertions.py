@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import regex
 from a2a.types import AgentCard
@@ -9,6 +10,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
 from pydantic import JsonValue
 
+from a2a_proof.ap2 import evaluate_ap2
 from a2a_proof.models import (
     AgentCardExpectation,
     DataExpectation,
@@ -34,7 +36,12 @@ class _Missing:
 _MISSING = _Missing()
 
 
-def evaluate(expectation: Expectation, outcome: TurnOutcome) -> list[str]:
+def evaluate(
+    expectation: Expectation,
+    outcome: TurnOutcome,
+    *,
+    contract_dir: Path | None = None,
+) -> list[str]:
     failures: list[str] = []
     expected_state = _normalize_state(expectation.state) if expectation.state else None
 
@@ -65,6 +72,7 @@ def evaluate(expectation: Expectation, outcome: TurnOutcome) -> list[str]:
         failures.extend(_evaluate_states(expectation.states, outcome.states))
     failures.extend(_evaluate_data(expectation.data, outcome.data))
     failures.extend(_evaluate_files(expectation.files, outcome.files))
+    failures.extend(evaluate_ap2(expectation.ap2, outcome.data, contract_dir or Path.cwd()))
     return failures
 
 

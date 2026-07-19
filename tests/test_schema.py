@@ -40,6 +40,13 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
                     "expect": {
                         "text": {"contains": "Paris"},
                         "data": {"path": "/temperature", "gte": 20, "lt": 30},
+                        "ap2": {
+                            "type": "payment",
+                            "trusted_root_jwk": "fixtures/root.jwk",
+                            "audience": "merchant",
+                            "nonce": "nonce-1",
+                            "transaction_id": "tx-1",
+                        },
                         "states": {"contains_in_order": ["working", "completed"]},
                         "files": {"media_type": "application/pdf", "count": 1},
                     },
@@ -183,3 +190,35 @@ def test_schema_rejects_invalid_task_action_turns() -> None:
         configuration({"action": "get_task", "return_immediately": False})
     )
     assert not validator.is_valid(configuration({"history_length": 1}))
+
+
+def test_schema_rejects_invalid_ap2_expectation_shape() -> None:
+    validator = Draft202012Validator(config_schema())
+
+    def configuration(expectation: dict[str, object]) -> dict[str, object]:
+        return {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "scenarios": [
+                {
+                    "name": "payment",
+                    "message": "Pay",
+                    "expect": {"ap2": expectation},
+                }
+            ],
+        }
+
+    base = {
+        "type": "payment",
+        "trusted_root_jwk": "fixtures/root.jwk",
+        "audience": "merchant",
+        "nonce": "nonce-1",
+    }
+    assert not validator.is_valid(configuration({**base, "path": "/bad~2escape"}))
+    assert not validator.is_valid(
+        configuration({**base, "source": "message", "artifact_name": "payment"})
+    )
+    assert not validator.is_valid(configuration({**base, "checkout_hash": "hash"}))
+    assert not validator.is_valid(
+        configuration({**base, "type": "checkout", "transaction_id": "tx"})
+    )

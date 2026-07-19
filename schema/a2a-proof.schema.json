@@ -1,5 +1,214 @@
 {
   "$defs": {
+    "AP2MandateExpectation": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "message"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "artifact_name"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "checkout"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "transaction_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "open_checkout_hash"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "payment"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "checkout_hash"
+              ]
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Name"
+        },
+        "audience": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Audience",
+          "type": "string"
+        },
+        "checkout_hash": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkout Hash"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "nonce": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Nonce",
+          "type": "string"
+        },
+        "open_checkout_hash": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open Checkout Hash"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "pattern": "^(?:/(?:[^~]|~[01])*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "RFC 6901 pointer to the mandate token; inferred from type by default.",
+          "title": "Path"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "artifact"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "transaction_id": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transaction Id"
+        },
+        "trusted_root_jwk": {
+          "description": "Public JWK path relative to the contract file.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Trusted Root Jwk",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "checkout",
+            "payment"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "trusted_root_jwk",
+        "audience",
+        "nonce"
+      ],
+      "title": "AP2MandateExpectation",
+      "type": "object"
+    },
     "AgentCapabilitiesExpectation": {
       "additionalProperties": false,
       "anyOf": [
@@ -394,6 +603,22 @@
     "Expectation": {
       "additionalProperties": false,
       "properties": {
+        "ap2": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AP2MandateExpectation"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/AP2MandateExpectation"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "Signed AP2 mandate chain checks.",
+          "title": "Ap2"
+        },
         "data": {
           "anyOf": [
             {
