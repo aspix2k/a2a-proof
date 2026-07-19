@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Limited outgoing structured input to 100 parts and 1 MB per turn after environment expansion.
 - Rejected malformed, duplicate, oversized, and excessive extension configuration.
 
-### Compatibility
+### Maintenance
 
 - Preserved header-based `A2A-Extensions` configuration while normalizing it with the dedicated
   `agent.extensions` field.
