@@ -91,6 +91,9 @@ def test_first_event_limit_is_inclusive_and_requires_timing() -> None:
     assert evaluate(expectation, _outcome(first_event_ms=None)) == [
         "agent returned no first-event timing"
     ]
+    assert evaluate(Expectation(max_first_event_seconds=1), _outcome(first_event_ms=1_001)) == [
+        "expected first event within 1s, got 1.001s"
+    ]
 
 
 def test_normalizes_state_separators() -> None:
@@ -110,10 +113,18 @@ def test_equals_respects_case_sensitivity() -> None:
     ]
 
 
-def test_case_sensitive_regex_uses_standard_flags() -> None:
+def test_case_sensitive_regex_uses_standard_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, int, float]] = []
+
+    def search(pattern: str, value: str, flags: int, *, timeout: float) -> object:
+        calls.append((pattern, value, flags, timeout))
+        return object()
+
+    monkeypatch.setattr(assertions_module.regex, "search", search)
     expectation = Expectation(text=TextExpectation(matches=r"A+"))
 
     assert evaluate(expectation, _outcome(text="AAA")) == []
+    assert calls == [("A+", "AAA", 0, assertions_module.REGEX_TIMEOUT_SECONDS)]
 
 
 def test_reports_regular_expression_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,6 +215,14 @@ def test_structured_data_equality_distinguishes_booleans_from_numbers() -> None:
         ),
         _outcome(data=data),
     ) == ["expected structured data at '/flag' to equal 1, got true"]
+
+
+def test_structured_data_equality_does_not_coerce_arrays() -> None:
+    data = (DataPartResult(source="message", value=[1]),)
+
+    assert evaluate(Expectation(data=DataExpectation(equals=1)), _outcome(data=data)) == [
+        "expected structured data at '<root>' to equal 1, got [1]"
+    ]
 
 
 def test_structured_data_can_equal_null_at_the_root() -> None:
@@ -303,6 +322,21 @@ def test_structured_data_matches_string_values_with_timeout(
     ]
 
 
+def test_structured_data_regex_uses_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, float]] = []
+
+    def search(pattern: str, value: str, *, timeout: float) -> object:
+        calls.append((pattern, value, timeout))
+        return object()
+
+    monkeypatch.setattr(assertions_module.regex, "search", search)
+    expectation = Expectation(data=DataExpectation(matches="Paris"))
+    data = (DataPartResult(source="message", value="Paris"),)
+
+    assert evaluate(expectation, _outcome(data=data)) == []
+    assert calls == [("Paris", "Paris", assertions_module.REGEX_TIMEOUT_SECONDS)]
+
+
 def test_structured_data_checks_numeric_bounds_without_treating_booleans_as_numbers() -> None:
     data = (
         DataPartResult(source="message", value={"price": True}),
@@ -315,6 +349,47 @@ def test_structured_data_checks_numeric_bounds_without_treating_booleans_as_numb
         Expectation(data=DataExpectation(path="/price", gt=20)),
         _outcome(data=data),
     ) == ["expected structured data at '/price' to be > 20, got true, 19.5"]
+    assert evaluate(
+        Expectation(data=DataExpectation(path="/price", gt=19.5)),
+        _outcome(data=data),
+    ) == ["expected structured data at '/price' to be > 19.5, got true, 19.5"]
+
+
+@pytest.mark.parametrize(
+    ("expectation", "value", "description"),
+    [
+        (DataExpectation(gte=10), 9, ">= 10"),
+        (DataExpectation(lt=10), 10, "< 10"),
+        (DataExpectation(lte=10), 11, "<= 10"),
+    ],
+)
+def test_structured_data_reports_each_numeric_boundary(
+    expectation: DataExpectation,
+    value: int,
+    description: str,
+) -> None:
+    assert evaluate(
+        Expectation(data=expectation),
+        _outcome(data=(DataPartResult(source="message", value=value),)),
+    ) == [f"expected structured data at '<root>' to be {description}, got {value}"]
+
+
+def test_structured_data_reports_combined_numeric_bounds() -> None:
+    expectation = Expectation(data=DataExpectation(gte=10, lt=20, lte=15))
+
+    assert evaluate(
+        expectation,
+        _outcome(data=(DataPartResult(source="message", value=30),)),
+    ) == ["expected structured data at '<root>' to be >= 10 and < 20 and <= 15, got 30"]
+
+
+def test_structured_data_rejects_non_numeric_candidates_for_numeric_bounds() -> None:
+    expectation = Expectation(data=DataExpectation(gt=0))
+
+    assert evaluate(
+        expectation,
+        _outcome(data=(DataPartResult(source="message", value="one"),)),
+    ) == ["expected structured data at '<root>' to be > 0, got \"one\""]
 
 
 def test_structured_data_validates_json_schema() -> None:
