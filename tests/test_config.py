@@ -9,7 +9,11 @@ import pytest
 import a2a_proof.config as config_module
 import a2a_proof.models as models_module
 from a2a_proof.config import ConfigError, load_config, write_config
-from a2a_proof.models import _split_extension_parameter, _validate_extension_uris
+from a2a_proof.models import (
+    _split_extension_parameter,
+    _validate_extension_uris,
+    _validate_json_schema_limits,
+)
 
 
 def _write(path: Path, content: str) -> Path:
@@ -219,6 +223,14 @@ scenarios: [{name: data, data: {value: "${VALUE}"}}]
         load_config(path, {"VALUE": "expanded value"})
 
 
+def test_structured_input_size_limit_is_inclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_INPUT_DATA_BYTES", 4)
+
+    assert models_module.Scenario(name="boundary", data={}).data == [{}]
+    with pytest.raises(ValueError, match="input data exceeds 4 bytes"):
+        models_module.Scenario(name="over limit", data={"x": 0})
+
+
 def test_validates_structured_data_assertion_shape() -> None:
     with pytest.raises(ValueError, match="at least one assertion"):
         models_module.DataExpectation()
@@ -248,16 +260,23 @@ def test_validates_data_regular_expression() -> None:
 
 
 def test_validates_embedded_json_schema_limits(monkeypatch: pytest.MonkeyPatch) -> None:
-    models_module.DataExpectation(json_schema={"type": "object"})
+    schema = {"type": "object"}
+    models_module.DataExpectation(json_schema=schema)
 
     with pytest.raises(ValueError, match="invalid JSON Schema"):
         models_module.DataExpectation(json_schema={"type": "not-a-type"})
+    with pytest.raises(ValueError, match="references must be local") as remote_reference:
+        _validate_json_schema_limits({"$ref": "https://example.com/schema.json"})
+    assert str(remote_reference.value) == "json_schema references must be local"
     with pytest.raises(ValueError, match="references must be local"):
-        models_module.DataExpectation(json_schema={"$ref": "https://example.com/schema.json"})
+        _validate_json_schema_limits({"$dynamicRef": "https://example.com/schema.json#anchor"})
 
-    monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_BYTES", 10)
-    with pytest.raises(ValueError, match="json_schema exceeds 10 bytes"):
-        models_module.DataExpectation(json_schema={"type": "object"})
+    size = len(b'{"type":"object"}')
+    monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_BYTES", size)
+    models_module.DataExpectation(json_schema=schema)
+    monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_BYTES", size - 1)
+    with pytest.raises(ValueError, match=f"json_schema exceeds {size - 1} bytes"):
+        models_module.DataExpectation(json_schema=schema)
 
 
 def test_rejects_excessively_deep_embedded_json_schema(
@@ -265,8 +284,10 @@ def test_rejects_excessively_deep_embedded_json_schema(
 ) -> None:
     monkeypatch.setattr(models_module, "MAX_JSON_SCHEMA_DEPTH", 2)
 
+    _validate_json_schema_limits({"object": {"value": 1}})
+    _validate_json_schema_limits({"array": [1]})
     with pytest.raises(ValueError, match="json_schema exceeds 2 levels"):
-        models_module.DataExpectation(json_schema={"properties": {"value": {"type": "string"}}})
+        _validate_json_schema_limits({"array": [[1]]})
 
 
 def test_parses_legacy_extension_parameter() -> None:

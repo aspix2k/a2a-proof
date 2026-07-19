@@ -530,8 +530,9 @@ def test_structured_data_count_limit_allows_the_boundary(
 def test_rejects_non_finite_structured_data() -> None:
     collector = ResponseCollector("context")
 
-    with pytest.raises(ProtocolError, match="invalid structured data"):
+    with pytest.raises(ProtocolError) as raised:
         collector.add(StreamResponse(message=new_data_message(float("nan"))))
+    assert str(raised.value) == "agent returned invalid structured data"
 
 
 def test_enforces_raw_data_limit(monkeypatch: pytest.MonkeyPatch) -> None:
