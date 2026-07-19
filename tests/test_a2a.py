@@ -579,7 +579,9 @@ def test_enforces_raw_data_limit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_sends_context_and_closes_client() -> None:
+async def test_session_sends_context_and_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    timestamps = iter([10.0, 10.025, 10.1])
+    monkeypatch.setattr(a2a_module, "perf_counter", lambda: next(timestamps))
     client = _FakeClient([StreamResponse(message=_agent_message("Hello"))])
     session = A2ASession(
         cast(Client, client),
@@ -595,6 +597,8 @@ async def test_session_sends_context_and_closes_client() -> None:
         )
 
     assert outcome.text == "Hello"
+    assert outcome.first_event_ms == 25
+    assert outcome.duration_ms == 100
     assert client.request is not None
     assert client.context is not None
     assert client.request.message.context_id == "context"
@@ -636,6 +640,24 @@ async def test_session_sends_structured_parts_and_normalizes_extensions() -> Non
         "Authorization": "Bearer secret",
         "A2A-Extensions": ("https://example.com/extensions/one,https://example.com/extensions/two"),
     }
+
+
+@pytest.mark.asyncio
+async def test_session_records_only_the_first_event_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    timestamps = iter([10.0, 10.01, 10.1])
+    monkeypatch.setattr(a2a_module, "perf_counter", lambda: next(timestamps))
+    client = _FakeClient(
+        [
+            StreamResponse(message=_agent_message("one", message_id="one")),
+            StreamResponse(message=_agent_message("two", message_id="two")),
+        ]
+    )
+    session = A2ASession(cast(Client, client), timeout=2)
+
+    outcome = await session.send_turn("Hi", context_id="context", task_id=None)
+
+    assert outcome.first_event_ms == 10
+    assert outcome.duration_ms == 100
 
 
 @pytest.mark.asyncio

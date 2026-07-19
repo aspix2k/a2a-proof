@@ -1,0 +1,598 @@
+{
+  "$defs": {
+    "AgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_cross_origin_interfaces": {
+          "default": false,
+          "description": "Allow Agent Card interfaces on another origin.",
+          "title": "Allow Cross Origin Interfaces",
+          "type": "boolean"
+        },
+        "card_path": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom Agent Card path.",
+          "title": "Card Path"
+        },
+        "extensions": {
+          "description": "Advertised A2A extensions to activate.",
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Extensions",
+          "type": "array"
+        },
+        "grpc_tls": {
+          "default": true,
+          "description": "Use TLS for gRPC interfaces.",
+          "title": "Grpc Tls",
+          "type": "boolean"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Request headers; keep values in environment variables.",
+          "title": "Headers",
+          "type": "object"
+        },
+        "timeout": {
+          "default": 30,
+          "description": "Turn timeout in seconds.",
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "Timeout",
+          "type": "number"
+        },
+        "transport": {
+          "default": "auto",
+          "description": "Required protocol binding or Agent Card preference.",
+          "enum": [
+            "auto",
+            "JSONRPC",
+            "HTTP+JSON",
+            "GRPC"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "url": {
+          "description": "Agent Card discovery base URL.",
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "AgentConfig",
+      "type": "object"
+    },
+    "DataExpectation": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "equals"
+          ]
+        },
+        {
+          "required": [
+            "exists"
+          ]
+        },
+        {
+          "required": [
+            "matches"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "required": [
+                "gt"
+              ]
+            },
+            {
+              "required": [
+                "gte"
+              ]
+            },
+            {
+              "required": [
+                "lt"
+              ]
+            },
+            {
+              "required": [
+                "lte"
+              ]
+            }
+          ]
+        },
+        {
+          "required": [
+            "json_schema"
+          ]
+        }
+      ],
+      "properties": {
+        "artifact_name": {
+          "anyOf": [
+            {
+              "description": "Required artifact name.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Name"
+        },
+        "equals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required JSON value."
+        },
+        "exists": {
+          "description": "Whether the selected path must exist.",
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "gt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Exclusive numeric lower bound.",
+          "title": "Gt"
+        },
+        "gte": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Inclusive numeric lower bound.",
+          "title": "Gte"
+        },
+        "json_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "Inline JSON Schema Draft 2020-12 document.",
+          "title": "Json Schema"
+        },
+        "lt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Exclusive numeric upper bound.",
+          "title": "Lt"
+        },
+        "lte": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Inclusive numeric upper bound.",
+          "title": "Lte"
+        },
+        "matches": {
+          "description": "Regular expression required for a string value.",
+          "maxLength": 100000,
+          "minLength": 1,
+          "title": "Matches",
+          "type": "string"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "description": "Required data-part media type.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "path": {
+          "default": "",
+          "description": "RFC 6901 JSON Pointer; empty selects the root.",
+          "maxLength": 1000,
+          "title": "Path",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "artifact"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Limit matching to message or artifact data parts.",
+          "title": "Source"
+        }
+      },
+      "title": "DataExpectation",
+      "type": "object"
+    },
+    "Expectation": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DataExpectation"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/DataExpectation"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Structured response checks.",
+          "title": "Data"
+        },
+        "max_first_event_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 600,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum time until the first response event.",
+          "title": "Max First Event Seconds"
+        },
+        "max_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 600,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum complete turn duration.",
+          "title": "Max Seconds"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required terminal A2A state.",
+          "title": "State"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Response text checks."
+        }
+      },
+      "title": "Expectation",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Scenario": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Single-turn structured input.",
+          "title": "Data"
+        },
+        "expect": {
+          "$ref": "#/$defs/Expectation",
+          "description": "Single-turn response."
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 100000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Single-turn text input.",
+          "title": "Message"
+        },
+        "name": {
+          "description": "Unique scenario name.",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "pass_rate": {
+          "default": 1.0,
+          "description": "Minimum successful trial fraction.",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Pass Rate",
+          "type": "number"
+        },
+        "trials": {
+          "default": 1,
+          "description": "Independent repetitions.",
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Trials",
+          "type": "integer"
+        },
+        "turns": {
+          "anyOf": [
+            {
+              "description": "Ordered multi-turn conversation.",
+              "items": {
+                "$ref": "#/$defs/Turn"
+              },
+              "maxItems": 50,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turns"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Scenario",
+      "type": "object"
+    },
+    "TextExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "case_sensitive": {
+          "default": true,
+          "description": "Apply case-sensitive text checks.",
+          "title": "Case Sensitive",
+          "type": "boolean"
+        },
+        "contains": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Required substrings.",
+          "title": "Contains"
+        },
+        "equals": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required complete response text.",
+          "title": "Equals"
+        },
+        "matches": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Required regular expressions.",
+          "title": "Matches"
+        },
+        "not_contains": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Forbidden substrings.",
+          "title": "Not Contains"
+        }
+      },
+      "title": "TextExpectation",
+      "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Structured data parts sent to the agent.",
+          "title": "Data"
+        },
+        "expect": {
+          "$ref": "#/$defs/Expectation",
+          "description": "Expected response."
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 100000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Text sent to the agent.",
+          "title": "Message"
+        }
+      },
+      "title": "Turn",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Black-box behavior contracts for one A2A agent.",
+  "properties": {
+    "agent": {
+      "$ref": "#/$defs/AgentConfig",
+      "description": "Agent discovery and transport settings."
+    },
+    "scenarios": {
+      "description": "Behavior contracts to run.",
+      "items": {
+        "$ref": "#/$defs/Scenario"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Scenarios",
+      "type": "array"
+    },
+    "version": {
+      "const": 1,
+      "description": "Configuration format version.",
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "agent",
+    "scenarios"
+  ],
+  "title": "a2a-proof configuration",
+  "type": "object"
+}

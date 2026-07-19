@@ -13,6 +13,7 @@ def _outcome(
     state: str = "completed",
     text: str = "Hello, World!",
     duration_ms: int = 100,
+    first_event_ms: int | None = 50,
     data: tuple[DataPartResult, ...] = (),
 ) -> TurnOutcome:
     return TurnOutcome(
@@ -22,6 +23,7 @@ def _outcome(
         context_id="context",
         duration_ms=duration_ms,
         data=data,
+        first_event_ms=first_event_ms,
     )
 
 
@@ -77,6 +79,18 @@ def test_duration_limit_is_inclusive() -> None:
 
     assert evaluate(expectation, _outcome(duration_ms=1_000)) == []
     assert evaluate(expectation, _outcome(duration_ms=1_001)) == ["expected at most 1s, got 1.001s"]
+
+
+def test_first_event_limit_is_inclusive_and_requires_timing() -> None:
+    expectation = Expectation(max_first_event_seconds=0.1)
+
+    assert evaluate(expectation, _outcome(first_event_ms=100)) == []
+    assert evaluate(expectation, _outcome(first_event_ms=101)) == [
+        "expected first event within 0.1s, got 0.101s"
+    ]
+    assert evaluate(expectation, _outcome(first_event_ms=None)) == [
+        "agent returned no first-event timing"
+    ]
 
 
 def test_normalizes_state_separators() -> None:
@@ -237,6 +251,121 @@ def test_structured_data_checks_expectations_after_a_match() -> None:
     assert evaluate(expectation, _outcome(data=data)) == [
         'expected structured data at \'/city\' to equal "London", got "Paris"'
     ]
+
+
+def test_structured_data_checks_existence() -> None:
+    data = (DataPartResult(source="message", value={"city": "Paris"}),)
+
+    assert (
+        evaluate(
+            Expectation(
+                data=[
+                    DataExpectation(path="/city", exists=True),
+                    DataExpectation(path="/country", exists=False),
+                ]
+            ),
+            _outcome(data=data),
+        )
+        == []
+    )
+    assert evaluate(
+        Expectation(data=DataExpectation(path="/city", exists=False)),
+        _outcome(data=data),
+    ) == ["expected structured data path '/city' to be absent, got \"Paris\""]
+    assert evaluate(
+        Expectation(data=DataExpectation(path="/country", exists=True)),
+        _outcome(data=data),
+    ) == ["structured data path '/country' was not found"]
+
+
+def test_structured_data_matches_string_values_with_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = (
+        DataPartResult(source="message", value={"value": 42}),
+        DataPartResult(source="message", value={"value": "order-42"}),
+    )
+    expectation = Expectation(data=DataExpectation(path="/value", matches=r"^order-\d+$"))
+
+    assert evaluate(expectation, _outcome(data=data)) == []
+
+    monkeypatch.setattr(assertions_module.regex, "search", lambda *args, **kwargs: None)
+    assert evaluate(expectation, _outcome(data=data)) == [
+        "expected structured data at '/value' to match /^order-\\d+$/, got 42, \"order-42\""
+    ]
+
+    def time_out(*args: object, **kwargs: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(assertions_module.regex, "search", time_out)
+    assert evaluate(expectation, _outcome(data=data)) == [
+        "regular expression /^order-\\d+$/ timed out"
+    ]
+
+
+def test_structured_data_checks_numeric_bounds_without_treating_booleans_as_numbers() -> None:
+    data = (
+        DataPartResult(source="message", value={"price": True}),
+        DataPartResult(source="message", value={"price": 19.5}),
+    )
+    expectation = Expectation(data=DataExpectation(path="/price", gt=10, gte=19.5, lt=20, lte=19.5))
+
+    assert evaluate(expectation, _outcome(data=data)) == []
+    assert evaluate(
+        Expectation(data=DataExpectation(path="/price", gt=20)),
+        _outcome(data=data),
+    ) == ["expected structured data at '/price' to be > 20, got true, 19.5"]
+
+
+def test_structured_data_validates_json_schema() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": False,
+    }
+    expectation = Expectation(data=DataExpectation(json_schema=schema))
+
+    assert (
+        evaluate(
+            expectation,
+            _outcome(data=(DataPartResult(source="message", value={"city": "Paris"}),)),
+        )
+        == []
+    )
+    assert evaluate(
+        expectation,
+        _outcome(data=(DataPartResult(source="message", value={"country": "France"}),)),
+    ) == ["structured data at '<root>' does not match JSON Schema: 'city' is a required property"]
+
+    multiple = (
+        DataPartResult(source="message", value={"country": "France"}),
+        DataPartResult(source="message", value={"city": 42}),
+    )
+    assert evaluate(expectation, _outcome(data=multiple)) == [
+        "structured data at '<root>' does not match JSON Schema: 'city' is a required property"
+    ]
+    mixed = (
+        DataPartResult(source="message", value={"country": "France"}),
+        DataPartResult(source="message", value={"city": "Paris"}),
+    )
+    assert evaluate(expectation, _outcome(data=mixed)) == []
+
+    referenced = Expectation(
+        data=DataExpectation(
+            json_schema={
+                "$defs": {"city": {"type": "string"}},
+                "$ref": "#/$defs/city",
+            }
+        )
+    )
+    assert (
+        evaluate(
+            referenced,
+            _outcome(data=(DataPartResult(source="message", value="Paris"),)),
+        )
+        == []
+    )
 
 
 def test_structured_data_reports_bounded_candidate_values() -> None:

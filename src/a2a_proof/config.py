@@ -14,6 +14,10 @@ from a2a_proof.models import ProofConfig
 
 MAX_CONFIG_BYTES = 1_000_000
 ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+CONFIG_SCHEMA_URL = (
+    "https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json"
+)
+JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 class ConfigError(ValueError):
@@ -49,7 +53,7 @@ def write_config(path: Path, data: Mapping[str, Any], *, force: bool = False) ->
     if not path.parent.is_dir():
         raise ConfigError(f"parent directory does not exist: {path.parent}")
 
-    content = yaml.safe_dump(
+    content = f"# yaml-language-server: $schema={CONFIG_SCHEMA_URL}\n\n" + yaml.safe_dump(
         dict(data),
         allow_unicode=True,
         sort_keys=False,
@@ -72,6 +76,36 @@ def write_config(path: Path, data: Mapping[str, Any], *, force: bool = False) ->
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise ConfigError(f"cannot write {path}: {error.strerror or error}") from error
+
+
+def config_schema() -> dict[str, Any]:
+    schema = ProofConfig.model_json_schema(mode="validation")
+    data_expectation = schema["$defs"]["DataExpectation"]
+    for name in ("exists", "matches", "gt", "gte", "lt", "lte", "json_schema"):
+        data_expectation["properties"][name].pop("default")
+    data_expectation["oneOf"] = [
+        {"required": ["equals"]},
+        {"required": ["exists"]},
+        {"required": ["matches"]},
+        {
+            "anyOf": [
+                {"required": ["gt"]},
+                {"required": ["gte"]},
+                {"required": ["lt"]},
+                {"required": ["lte"]},
+            ]
+        },
+        {"required": ["json_schema"]},
+    ]
+    schema.update(
+        {
+            "$schema": JSON_SCHEMA_DIALECT,
+            "$id": CONFIG_SCHEMA_URL,
+            "title": "a2a-proof configuration",
+            "description": "Black-box behavior contracts for one A2A agent.",
+        }
+    )
+    return schema
 
 
 def _expand_environment(value: Any, environ: Mapping[str, str]) -> Any:

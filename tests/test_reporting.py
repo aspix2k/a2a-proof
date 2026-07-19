@@ -105,3 +105,9 @@ def test_renders_junit_failures_errors_and_trials() -> None:
     error = cases[1].find("error")
     assert error is not None
     assert error.attrib["message"] == "connection failed"
+
+    passing = ET.fromstring(render_junit(_result(passed=True)))
+    passing_case = passing.find("testcase")
+    assert passing_case is not None
+    assert passing_case.attrib["name"] == "scenario[31m"
+    assert passing_case.find("failure") is None

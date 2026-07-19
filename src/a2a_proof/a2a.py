@@ -103,6 +103,7 @@ class A2ASession:
         request = SendMessageRequest(message=message)
         collector = ResponseCollector(context_id)
         started = perf_counter()
+        first_event_ms: int | None = None
 
         try:
             async with asyncio.timeout(self._timeout):
@@ -111,11 +112,16 @@ class A2ASession:
                     service_parameters=self._service_parameters.copy() or None,
                 )
                 async for response in self._client.send_message(request, context=call_context):
+                    if first_event_ms is None:
+                        first_event_ms = round((perf_counter() - started) * 1_000)
                     collector.add(response)
         except TimeoutError as error:
             raise ProtocolError(f"agent did not finish within {self._timeout:g} seconds") from error
 
-        return collector.finish(duration_ms=round((perf_counter() - started) * 1_000))
+        return collector.finish(
+            duration_ms=round((perf_counter() - started) * 1_000),
+            first_event_ms=first_event_ms,
+        )
 
 
 async def discover_agent(

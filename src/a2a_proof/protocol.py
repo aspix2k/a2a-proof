@@ -38,6 +38,7 @@ class TurnOutcome:
     context_id: str | None
     duration_ms: int
     data: tuple[DataPartResult, ...] = ()
+    first_event_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +83,7 @@ class ResponseCollector:
             raise ProtocolError("agent returned an empty stream event")
         self._check_size()
 
-    def finish(self, *, duration_ms: int) -> TurnOutcome:
+    def finish(self, *, duration_ms: int, first_event_ms: int | None = None) -> TurnOutcome:
         if self._events == 0:
             raise ProtocolError("agent returned no response")
         if self._state not in INTERRUPTED_STATES | {"message"}:
@@ -97,6 +98,7 @@ class ResponseCollector:
             context_id=self._context_id,
             duration_ms=duration_ms,
             data=data,
+            first_event_ms=first_event_ms,
         )
 
     def _add_task(self, task: Task) -> None:

@@ -229,15 +229,28 @@ async def test_runs_structured_artifact_contract_over_real_jsonrpc(agent_url: st
                     "data": {"action": "forecast", "city": "Paris"},
                     "expect": {
                         "state": "completed",
+                        "max_first_event_seconds": 5,
                         "data": [
                             {
                                 "source": "artifact",
                                 "artifact_name": "forecast",
                                 "media_type": "application/json",
                                 "path": "/city",
-                                "equals": "Paris",
+                                "matches": "^Par",
                             },
-                            {"path": "/temperature", "equals": 21},
+                            {"path": "/temperature", "gte": 20, "lt": 22},
+                            {"path": "/alerts", "exists": False},
+                            {
+                                "json_schema": {
+                                    "type": "object",
+                                    "required": ["city", "temperature"],
+                                    "properties": {
+                                        "city": {"type": "string"},
+                                        "temperature": {"type": "number"},
+                                    },
+                                    "additionalProperties": False,
+                                }
+                            },
                         ],
                     },
                 }
@@ -251,6 +264,7 @@ async def test_runs_structured_artifact_contract_over_real_jsonrpc(agent_url: st
     data = result.scenarios[0].trials[0].turns[0].data
     assert data[0].value == {"city": "Paris", "temperature": 21.0}
     assert data[0].artifact_id == "result"
+    assert result.scenarios[0].trials[0].turns[0].first_event_ms is not None
 
 
 @pytest.mark.asyncio
