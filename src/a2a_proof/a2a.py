@@ -16,9 +16,14 @@ from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.helpers import new_data_part, new_message, new_text_part
 from a2a.types import (
     AgentCard,
+    CancelTaskRequest,
+    GetTaskRequest,
     Part,
     Role,
+    SendMessageConfiguration,
     SendMessageRequest,
+    StreamResponse,
+    Task,
 )
 from a2a.utils.constants import TransportProtocol
 from pydantic import JsonValue
@@ -38,8 +43,10 @@ class A2ASession:
         timeout: float,
         headers: Mapping[str, str] | None = None,
         extensions: list[str] | None = None,
+        lifecycle_client: Client | None = None,
     ) -> None:
         self._client = client
+        self._lifecycle_client = lifecycle_client or client
         self.card = card
         self._timeout = timeout
         self._service_parameters = _service_parameters(headers or {}, extensions or [])
@@ -47,6 +54,9 @@ class A2ASession:
     @classmethod
     async def connect(cls, config: AgentConfig) -> A2ASession:
         http_client = _http_client(config)
+        lifecycle_http_client: httpx.AsyncClient | None = None
+        client: Client | None = None
+        lifecycle_client: Client | None = None
         try:
             card = await _resolve_card(
                 http_client,
@@ -69,9 +79,36 @@ class A2ASession:
                 use_client_preference=config.transport != "auto",
             )
             client = ClientFactory(client_config).create(card)
-            return cls(client, card, config.timeout, config.headers, extensions)
+            lifecycle_client = client
+            if card.capabilities.streaming:
+                lifecycle_http_client = _http_client(config)
+                lifecycle_config = ClientConfig(
+                    streaming=False,
+                    httpx_client=lifecycle_http_client,
+                    grpc_channel_factory=lambda url: _grpc_channel(url, tls=config.grpc_tls),
+                    supported_protocol_bindings=bindings,
+                    use_client_preference=config.transport != "auto",
+                )
+                lifecycle_client = ClientFactory(lifecycle_config).create(card)
+            return cls(
+                client,
+                card,
+                config.timeout,
+                config.headers,
+                extensions,
+                lifecycle_client,
+            )
         except BaseException:
-            await http_client.aclose()
+            try:
+                if client is None:
+                    await http_client.aclose()
+                else:
+                    await client.close()
+            finally:
+                if lifecycle_client is not None and lifecycle_client is not client:
+                    await lifecycle_client.close()
+                elif lifecycle_http_client is not None:
+                    await lifecycle_http_client.aclose()
             raise
 
     async def __aenter__(self) -> A2ASession:
@@ -86,7 +123,11 @@ class A2ASession:
         await self.close()
 
     async def close(self) -> None:
-        await self._client.close()
+        try:
+            await self._client.close()
+        finally:
+            if self._lifecycle_client is not self._client:
+                await self._lifecycle_client.close()
 
     async def send_turn(
         self,
@@ -96,6 +137,7 @@ class A2ASession:
         files: list[PreparedFile] | None = None,
         context_id: str,
         task_id: str | None,
+        return_immediately: bool = False,
     ) -> TurnOutcome:
         parts = [new_text_part(text)] if text is not None else []
         parts.extend(new_data_part(value) for value in data or [])
@@ -109,7 +151,12 @@ class A2ASession:
             task_id=task_id,
             role=Role.ROLE_USER,
         )
-        request = SendMessageRequest(message=message)
+        request = SendMessageRequest(
+            message=message,
+            configuration=(
+                SendMessageConfiguration(return_immediately=True) if return_immediately else None
+            ),
+        )
         collector = ResponseCollector(context_id)
         started = perf_counter()
         first_event_ms: int | None = None
@@ -120,7 +167,8 @@ class A2ASession:
                     timeout=self._timeout,
                     service_parameters=self._service_parameters.copy() or None,
                 )
-                async for response in self._client.send_message(request, context=call_context):
+                client = self._lifecycle_client if return_immediately else self._client
+                async for response in client.send_message(request, context=call_context):
                     if first_event_ms is None:
                         first_event_ms = round((perf_counter() - started) * 1_000)
                     collector.add(response)
@@ -130,6 +178,50 @@ class A2ASession:
         return collector.finish(
             duration_ms=round((perf_counter() - started) * 1_000),
             first_event_ms=first_event_ms,
+            require_terminal=not return_immediately,
+        )
+
+    async def cancel_task(self, *, task_id: str, context_id: str) -> TurnOutcome:
+        started = perf_counter()
+        try:
+            async with asyncio.timeout(self._timeout):
+                task = await self._lifecycle_client.cancel_task(
+                    CancelTaskRequest(id=task_id),
+                    context=self._call_context(),
+                )
+        except TimeoutError as error:
+            raise ProtocolError(
+                f"agent did not cancel task within {self._timeout:g} seconds"
+            ) from error
+        return _task_outcome(task, context_id, started)
+
+    async def get_task(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        history_length: int | None = None,
+    ) -> TurnOutcome:
+        started = perf_counter()
+        request = GetTaskRequest(id=task_id)
+        if history_length is not None:
+            request.history_length = history_length
+        try:
+            async with asyncio.timeout(self._timeout):
+                task = await self._lifecycle_client.get_task(
+                    request,
+                    context=self._call_context(),
+                )
+        except TimeoutError as error:
+            raise ProtocolError(
+                f"agent did not return task within {self._timeout:g} seconds"
+            ) from error
+        return _task_outcome(task, context_id, started)
+
+    def _call_context(self) -> ClientCallContext:
+        return ClientCallContext(
+            timeout=self._timeout,
+            service_parameters=self._service_parameters.copy() or None,
         )
 
 
@@ -151,6 +243,17 @@ def _http_client(config: AgentConfig) -> httpx.AsyncClient:
         headers=config.headers,
         timeout=httpx.Timeout(config.timeout),
         follow_redirects=False,
+    )
+
+
+def _task_outcome(task: Task, context_id: str, started: float) -> TurnOutcome:
+    elapsed_ms = round((perf_counter() - started) * 1_000)
+    collector = ResponseCollector(context_id)
+    collector.add(StreamResponse(task=task))
+    return collector.finish(
+        duration_ms=elapsed_ms,
+        first_event_ms=elapsed_ms,
+        require_terminal=False,
     )
 
 

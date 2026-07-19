@@ -176,6 +176,28 @@ def config_schema() -> dict[str, Any]:
         {"required": ["not_contains"]},
         {"required": ["not_contains_env"]},
     ]
+    turn = definitions["Turn"]
+    content_fields = [{"required": [name]} for name in ("message", "data", "files")]
+    content_forbidden = [{"required": [name]} for name in ("action", "history_length")]
+    action_forbidden = [
+        {"required": [name]} for name in ("message", "data", "files", "return_immediately")
+    ]
+    turn["oneOf"] = [
+        {
+            "anyOf": content_fields,
+            "not": {"anyOf": content_forbidden},
+        },
+        {
+            "required": ["action"],
+            "properties": {"action": {"const": "cancel"}},
+            "not": {"anyOf": [*action_forbidden, {"required": ["history_length"]}]},
+        },
+        {
+            "required": ["action"],
+            "properties": {"action": {"const": "get_task"}},
+            "not": {"anyOf": action_forbidden},
+        },
+    ]
     schema.update(
         {
             "$schema": JSON_SCHEMA_DIALECT,

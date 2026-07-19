@@ -13,9 +13,16 @@ from rich.console import Console
 
 from a2a_proof.a2a import discover_agent
 from a2a_proof.config import ConfigError, load_config, write_config
+from a2a_proof.diffing import compare_results
 from a2a_proof.evidence import EvidenceError, write_evidence
-from a2a_proof.models import AgentConfig, ProofConfig, Scenario
-from a2a_proof.reporting import render_json, render_junit, render_terminal
+from a2a_proof.models import AgentConfig, ProofConfig, Scenario, SuiteResult
+from a2a_proof.reporting import (
+    render_diff_json,
+    render_diff_terminal,
+    render_json,
+    render_junit,
+    render_terminal,
+)
 from a2a_proof.runner import run
 
 DEFAULT_CONFIG = Path("a2a-proof.yaml")
@@ -196,6 +203,92 @@ def run_command(
         render_terminal(result, Console(), verbose=verbose)
     if not result.passed:
         raise click.exceptions.Exit(1)
+
+
+@main.command("diff")
+@click.argument(
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=DEFAULT_CONFIG,
+)
+@click.option("--against", required=True, metavar="URL", help="Candidate agent discovery URL.")
+@click.option(
+    "output_format",
+    "--format",
+    type=click.Choice(["terminal", "json"]),
+    default="terminal",
+)
+@click.option("--output", "-o", type=click.Path(path_type=Path, dir_okay=False))
+@click.option(
+    "--jobs",
+    type=click.IntRange(min=1, max=32),
+    default=1,
+    show_default=True,
+    help="Maximum concurrent trials within one scenario.",
+)
+@click.option(
+    "scenario_names",
+    "--scenario",
+    multiple=True,
+    metavar="NAME",
+    help="Compare only this scenario. Repeat to select more than one.",
+)
+def diff_command(
+    config_path: Path,
+    against: str,
+    output_format: str,
+    output: Path | None,
+    jobs: int,
+    scenario_names: tuple[str, ...],
+) -> None:
+    """Compare one contract against baseline and candidate agents."""
+    if output is not None and output_format == "terminal":
+        raise click.UsageError("--output requires --format json")
+    try:
+        config = load_config(config_path)
+        if scenario_names:
+            config = config.model_copy(
+                update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
+            )
+        candidate_agent = AgentConfig.model_validate({**config.agent.model_dump(), "url": against})
+        candidate_config = config.model_copy(update={"agent": candidate_agent})
+        baseline_result, candidate_result = asyncio.run(
+            _run_pair(config, candidate_config, max_parallel_trials=jobs)
+        )
+        result = compare_results(
+            baseline_result,
+            candidate_result,
+            [scenario.name for scenario in config.scenarios],
+        )
+    except (A2AClientError, ConfigError, ValidationError, OSError, RuntimeError) as error:
+        raise ProofCommandError(str(error)) from error
+
+    if output_format == "json":
+        rendered = f"{render_diff_json(result)}\n"
+        if output is None:
+            click.echo(rendered, nl=False)
+        else:
+            try:
+                output.write_text(rendered, encoding="utf-8")
+            except OSError as error:
+                raise ProofCommandError(
+                    f"cannot write {output}: {error.strerror or error}"
+                ) from error
+    else:
+        render_diff_terminal(result, Console())
+    if not result.passed:
+        raise click.exceptions.Exit(1)
+
+
+async def _run_pair(
+    baseline: ProofConfig,
+    candidate: ProofConfig,
+    *,
+    max_parallel_trials: int,
+) -> tuple[SuiteResult, SuiteResult]:
+    baseline_result = await run(baseline, max_parallel_trials=max_parallel_trials)
+    candidate_result = await run(candidate, max_parallel_trials=max_parallel_trials)
+    return baseline_result, candidate_result
 
 
 def _header_environment(values: tuple[str, ...]) -> tuple[dict[str, str], dict[str, str]]:

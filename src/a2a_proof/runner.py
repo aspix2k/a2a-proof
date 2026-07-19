@@ -27,6 +27,7 @@ from a2a_proof.models import (
 from a2a_proof.protocol import TurnOutcome
 
 SendTurn = Callable[..., Awaitable[TurnOutcome]]
+TaskAction = Callable[..., Awaitable[TurnOutcome]]
 MAX_PARALLEL_TRIALS = 32
 REDACTED_RESPONSE = "[REDACTED: global invariant]"
 
@@ -43,6 +44,8 @@ async def run(
         return await run_with_sender(
             config,
             session.send_turn,
+            cancel_task=session.cancel_task,
+            get_task=session.get_task,
             card=session.card,
             invariant_secrets=invariant_secrets,
             max_parallel_trials=max_parallel_trials,
@@ -53,6 +56,8 @@ async def run_with_sender(
     config: ProofConfig,
     send_turn: SendTurn,
     *,
+    cancel_task: TaskAction | None = None,
+    get_task: TaskAction | None = None,
     card: AgentCard | None = None,
     invariant_secrets: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
@@ -74,6 +79,8 @@ async def run_with_sender(
             await _run_scenario(
                 scenario,
                 send_turn,
+                cancel_task,
+                get_task,
                 config,
                 secrets,
                 max_parallel_trials,
@@ -93,13 +100,23 @@ async def run_with_sender(
 async def _run_scenario(
     scenario: Scenario,
     send_turn: SendTurn,
+    cancel_task: TaskAction | None,
+    get_task: TaskAction | None,
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     max_parallel_trials: int,
 ) -> ScenarioResult:
     if max_parallel_trials == 1:
         trials = [
-            await _run_trial(index, scenario, send_turn, config, invariant_secrets)
+            await _run_trial(
+                index,
+                scenario,
+                send_turn,
+                cancel_task,
+                get_task,
+                config,
+                invariant_secrets,
+            )
             for index in range(1, scenario.trials + 1)
         ]
     else:
@@ -107,7 +124,15 @@ async def _run_scenario(
 
         async def run_trial(index: int) -> TrialResult:
             async with semaphore:
-                return await _run_trial(index, scenario, send_turn, config, invariant_secrets)
+                return await _run_trial(
+                    index,
+                    scenario,
+                    send_turn,
+                    cancel_task,
+                    get_task,
+                    config,
+                    invariant_secrets,
+                )
 
         trials = list(
             await asyncio.gather(*(run_trial(index) for index in range(1, scenario.trials + 1)))
@@ -129,6 +154,8 @@ async def _run_trial(
     index: int,
     scenario: Scenario,
     send_turn: SendTurn,
+    cancel_task: TaskAction | None,
+    get_task: TaskAction | None,
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
 ) -> TrialResult:
@@ -138,14 +165,31 @@ async def _run_trial(
     results: list[TurnResult] = []
 
     try:
-        for turn_index, turn in enumerate(scenario.resolved_turns(), start=1):
-            outcome = await send_turn(
-                turn.message,
-                data=turn.data,
-                files=prepare_files(turn.files, config.contract_dir),
-                context_id=context_id,
-                task_id=task_id,
-            )
+        turns = scenario.resolved_turns()
+        for turn_index, turn in enumerate(turns, start=1):
+            if turn.action is not None:
+                if task_id is None:
+                    raise ValueError(f"action {turn.action!r} requires a task from a prior turn")
+                operation = cancel_task if turn.action == "cancel" else get_task
+                if operation is None:
+                    raise ValueError(f"action {turn.action!r} is not available")
+                arguments: dict[str, object] = {
+                    "task_id": task_id,
+                    "context_id": context_id,
+                }
+                if turn.action == "get_task":
+                    arguments["history_length"] = turn.history_length
+                outcome = await operation(**arguments)
+            else:
+                arguments = {
+                    "data": turn.data,
+                    "files": prepare_files(turn.files, config.contract_dir),
+                    "context_id": context_id,
+                    "task_id": task_id,
+                }
+                if turn.return_immediately:
+                    arguments["return_immediately"] = True
+                outcome = await send_turn(turn.message, **arguments)
             failures = evaluate(turn.expect, outcome)
             invariant_failures: list[str] = []
             if config.invariants is not None:
@@ -174,9 +218,11 @@ async def _run_trial(
             if failures:
                 break
             context_id = outcome.context_id or context_id
-            task_id = (
-                outcome.task_id if outcome.state in {"auth_required", "input_required"} else None
+            next_turn = turns[turn_index] if turn_index < len(turns) else None
+            keep_task = outcome.state in {"auth_required", "input_required"} or (
+                next_turn is not None and next_turn.action is not None
             )
+            task_id = (outcome.task_id or task_id) if keep_task else None
     except Exception as error:
         return TrialResult(
             index=index,

@@ -1,6 +1,6 @@
 [project]
 name = "a2a-proof"
-version = "0.6.0"
+version = "0.7.0"
 description = "Black-box contract tests for A2A agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -94,6 +94,7 @@ also_copy = ["schema/"]
 only_mutate = [
   "src/a2a_proof/assertions.py",
   "src/a2a_proof/config.py",
+  "src/a2a_proof/diffing.py",
   "src/a2a_proof/evidence.py",
   "src/a2a_proof/files.py",
   "src/a2a_proof/models.py",

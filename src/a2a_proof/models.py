@@ -403,6 +403,20 @@ class Turn(StrictModel):
         max_length=MAX_INPUT_FILES,
         description="Local files sent as inline A2A raw parts.",
     )
+    action: Literal["cancel", "get_task"] | None = Field(
+        default=None,
+        description="Task lifecycle operation using the preceding task ID.",
+    )
+    return_immediately: bool = Field(
+        default=False,
+        description="Ask the agent to return the initial task state without waiting.",
+    )
+    history_length: int | None = Field(
+        default=None,
+        ge=0,
+        le=1_000,
+        description="Task history entries requested by a get_task action.",
+    )
     expect: Expectation = Field(default_factory=Expectation, description="Expected response.")
 
     @field_validator(
@@ -421,9 +435,16 @@ class Turn(StrictModel):
         return data
 
     @model_validator(mode="after")
-    def require_content(self) -> Self:
-        if self.message is None and not self.data and not self.files:
+    def validate_operation(self) -> Self:
+        has_content = self.message is not None or bool(self.data) or bool(self.files)
+        if self.action is None and not has_content:
             raise ValueError("turn must contain message, data, or files")
+        if self.action is not None and has_content:
+            raise ValueError("turn cannot combine an action with message, data, or files")
+        if self.action is not None and "return_immediately" in self.model_fields_set:
+            raise ValueError("return_immediately can only be used with an input turn")
+        if "history_length" in self.model_fields_set and self.action != "get_task":
+            raise ValueError("history_length can only be used with action: get_task")
         return self
 
 
@@ -512,6 +533,8 @@ class Scenario(StrictModel):
             raise ValueError("scenario must contain message, data, files, or turns")
         if self.turns is not None and "expect" in self.model_fields_set:
             raise ValueError("put expect on each turn when using turns")
+        if self.turns is not None and self.turns[0].action is not None:
+            raise ValueError("the first turn cannot be a task action")
         return self
 
     def resolved_turns(self) -> list[Turn]:
@@ -734,6 +757,20 @@ class SuiteResult(StrictModel):
     card: CardResult | None = None
     scenarios: list[ScenarioResult]
     agent_card_sha256: str | None = Field(default=None, exclude=True)
+
+
+class DiffCheck(StrictModel):
+    name: str
+    baseline: Literal["passed", "failed", "not_run"]
+    candidate: Literal["passed", "failed", "not_run"]
+    change: Literal["unchanged", "regression", "improvement", "changed"]
+
+
+class DiffResult(StrictModel):
+    passed: bool
+    baseline: SuiteResult
+    candidate: SuiteResult
+    checks: list[DiffCheck]
 
 
 def _validate_input_data_size(data: list[JsonValue]) -> None:
