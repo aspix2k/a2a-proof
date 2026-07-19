@@ -132,6 +132,104 @@ async def test_stops_trial_after_failed_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runs_cancel_and_persistence_actions() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        calls.append(("send", {"message": message, **context}))
+        return TurnOutcome("working", "started", "task", "server-context", 1)
+
+    async def cancel_task(**context: object) -> TurnOutcome:
+        calls.append(("cancel", context))
+        return TurnOutcome("canceled", "", "task", "server-context", 2)
+
+    async def get_task(**context: object) -> TurnOutcome:
+        calls.append(("get_task", context))
+        return TurnOutcome("canceled", "stored", "task", "server-context", 3)
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "lifecycle",
+                    "turns": [
+                        {
+                            "message": "Start",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {"action": "cancel", "expect": {"state": "canceled"}},
+                        {
+                            "action": "get_task",
+                            "history_length": 5,
+                            "expect": {"state": "canceled", "text": {"equals": "stored"}},
+                        },
+                    ],
+                }
+            ]
+        ),
+        send_turn,
+        cancel_task=cancel_task,
+        get_task=get_task,
+    )
+
+    assert result.passed
+    assert calls[0][0] == "send"
+    assert calls[0][1]["return_immediately"] is True
+    assert calls[1] == (
+        "cancel",
+        {"task_id": "task", "context_id": "server-context"},
+    )
+    assert calls[2] == (
+        "get_task",
+        {"task_id": "task", "context_id": "server-context", "history_length": 5},
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_action_requires_prior_task_id() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("message", "done", None, str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "no task",
+                    "turns": [{"message": "Start"}, {"action": "get_task"}],
+                }
+            ]
+        ),
+        send_turn,
+    )
+
+    assert not result.passed
+    assert result.scenarios[0].trials[0].error == (
+        "ValueError: action 'get_task' requires a task from a prior turn"
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_action_requires_available_operation() -> None:
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("completed", "done", "task", str(context["context_id"]), 1)
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "unavailable",
+                    "turns": [{"message": "Start"}, {"action": "cancel"}],
+                }
+            ]
+        ),
+        send_turn,
+    )
+
+    assert result.scenarios[0].trials[0].error == "ValueError: action 'cancel' is not available"
+
+
+@pytest.mark.asyncio
 async def test_applies_global_invariants_to_every_turn() -> None:
     responses = iter(["safe", "system prompt contains secret-value"])
     calls = 0
@@ -344,17 +442,139 @@ async def test_run_defaults_to_sequential_trials(monkeypatch: pytest.MonkeyPatch
             active -= 1
             return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
 
+        async def cancel_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+    config = _config([{"name": "default", "message": "hello", "trials": 2}])
+
     async def connect(agent: object) -> Session:
+        assert agent is config.agent
         return Session()
 
     monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
 
-    result = await runner_module.run(
-        _config([{"name": "default", "message": "hello", "trials": 2}])
-    )
+    result = await runner_module.run(config)
 
     assert result.passed
     assert maximum == 1
+
+
+@pytest.mark.asyncio
+async def test_run_wires_card_lifecycle_and_parallelism(monkeypatch: pytest.MonkeyPatch) -> None:
+    active = 0
+    maximum = 0
+    cancel_calls = 0
+    get_calls = 0
+
+    class Session:
+        card = AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=False))
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def send_turn(self, message: str | None, **context: object) -> TurnOutcome:
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return TurnOutcome("working", "started", "task", str(context["context_id"]), 1)
+
+        async def cancel_task(self, **context: object) -> TurnOutcome:
+            nonlocal cancel_calls
+            cancel_calls += 1
+            return TurnOutcome("canceled", "", "task", str(context["context_id"]), 1)
+
+        async def get_task(self, **context: object) -> TurnOutcome:
+            nonlocal get_calls
+            get_calls += 1
+            return TurnOutcome("canceled", "stored", "task", str(context["context_id"]), 1)
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "card": {"capabilities": {"streaming": False}},
+            "scenarios": [
+                {
+                    "name": "lifecycle",
+                    "trials": 2,
+                    "turns": [
+                        {
+                            "message": "Start",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {"action": "cancel", "expect": {"state": "canceled"}},
+                        {"action": "get_task", "expect": {"state": "canceled"}},
+                    ],
+                }
+            ],
+        }
+    )
+
+    async def connect(agent: object) -> Session:
+        assert agent is config.agent
+        return Session()
+
+    monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
+
+    result = await runner_module.run(config, max_parallel_trials=2)
+
+    assert result.passed
+    assert result.card is not None
+    assert maximum == 2
+    assert cancel_calls == 2
+    assert get_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_run_uses_explicit_environment_for_invariant_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Session:
+        card = AgentCard(name="Agent")
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def send_turn(self, message: str | None, **context: object) -> TurnOutcome:
+            return TurnOutcome("completed", "runtime-secret", None, str(context["context_id"]), 1)
+
+        async def cancel_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+    async def connect(agent: object) -> Session:
+        return Session()
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "invariants": {"text": {"not_contains_env": "API_TOKEN"}},
+            "scenarios": [{"name": "secret", "message": "Hello"}],
+        }
+    )
+    monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
+
+    result = await runner_module.run(config, environ={"API_TOKEN": "runtime-secret"})
+
+    assert not result.passed
+    turn = result.scenarios[0].trials[0].turns[0]
+    assert turn.response_redacted
+    assert turn.failures == ["response text contains value from environment variable 'API_TOKEN'"]
 
 
 @pytest.mark.asyncio

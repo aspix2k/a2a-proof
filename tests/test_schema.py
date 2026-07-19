@@ -58,6 +58,22 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
             "defaults": {"trials": 3, "pass_rate": 0.66},
         }
     )
+    validator.validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "scenarios": [
+                {
+                    "name": "lifecycle",
+                    "turns": [
+                        {"message": "Start", "return_immediately": True},
+                        {"action": "cancel"},
+                        {"action": "get_task", "history_length": 5},
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def test_schema_rejects_unknown_fields() -> None:
@@ -144,3 +160,26 @@ def test_schema_has_stable_identity() -> None:
 
     assert schema["$id"] == CONFIG_SCHEMA_URL
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+
+
+def test_schema_rejects_invalid_task_action_turns() -> None:
+    validator = Draft202012Validator(config_schema())
+
+    def configuration(turn: dict[str, object]) -> dict[str, object]:
+        return {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "scenarios": [
+                {
+                    "name": "lifecycle",
+                    "turns": [{"message": "Start"}, turn],
+                }
+            ],
+        }
+
+    assert not validator.is_valid(configuration({"action": "cancel", "message": "also send"}))
+    assert not validator.is_valid(configuration({"action": "cancel", "history_length": 1}))
+    assert not validator.is_valid(
+        configuration({"action": "get_task", "return_immediately": False})
+    )
+    assert not validator.is_valid(configuration({"history_length": 1}))

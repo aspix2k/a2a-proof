@@ -330,6 +330,9 @@ def test_resolves_single_turn_structured_input() -> None:
         "message": "Create order",
         "data": [{"order_id": "order-42"}],
         "files": [],
+        "action": None,
+        "return_immediately": False,
+        "history_length": None,
         "expect": {
             "state": None,
             "text": None,
@@ -340,6 +343,31 @@ def test_resolves_single_turn_structured_input() -> None:
             "max_first_event_seconds": None,
         },
     }
+
+
+def test_validates_task_action_turns() -> None:
+    scenario = models_module.Scenario.model_validate(
+        {
+            "name": "cancel",
+            "turns": [
+                {"message": "Start", "return_immediately": True},
+                {"action": "cancel", "expect": {"state": "canceled"}},
+                {"action": "get_task", "history_length": 5},
+            ],
+        }
+    )
+
+    assert [turn.action for turn in scenario.resolved_turns()] == [None, "cancel", "get_task"]
+    assert scenario.resolved_turns()[2].history_length == 5
+
+    with pytest.raises(ValueError, match="first turn cannot be a task action"):
+        models_module.Scenario(name="invalid", turns=[{"action": "cancel"}])
+    with pytest.raises(ValueError, match="cannot combine an action"):
+        models_module.Turn(message="Start", action="cancel")
+    with pytest.raises(ValueError, match="return_immediately can only"):
+        models_module.Turn(action="cancel", return_immediately=True)
+    with pytest.raises(ValueError, match="history_length can only"):
+        models_module.Turn(message="Start", history_length=1)
 
 
 def test_loads_and_validates_relative_file_inputs(tmp_path: Path) -> None:

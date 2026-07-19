@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from a2a.client.errors import AgentCardResolutionError
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
 from click.testing import CliRunner
 
 import a2a_proof.cli as cli_module
 from a2a_proof.cli import main
-from a2a_proof.models import ScenarioResult, SuiteResult, TrialResult
+from a2a_proof.models import ProofConfig, ScenarioResult, SuiteResult, TrialResult
 
 VALID_CONFIG = """
 version: 1
@@ -441,6 +442,223 @@ def test_run_reports_agent_connection_error_without_traceback(tmp_path: Path, mo
 
     assert result.exit_code == 2
     assert result.output == "Error: agent is unreachable\n"
+
+
+def test_diff_runs_selected_contract_against_candidate_and_writes_json(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(
+        """
+version: 1
+agent: {url: https://baseline.example}
+scenarios:
+  - {name: first, message: One}
+  - {name: second, message: Two}
+""",
+        encoding="utf-8",
+    )
+    baseline = SuiteResult(
+        passed=True,
+        duration_ms=1,
+        scenarios=[
+            ScenarioResult(
+                name="second",
+                passed=True,
+                passed_trials=1,
+                required_trials=1,
+                trials=[],
+            )
+        ],
+    )
+    candidate = baseline.model_copy(deep=True)
+
+    async def run_pair(baseline_config, candidate_config, *, max_parallel_trials):
+        assert [scenario.name for scenario in baseline_config.scenarios] == ["second"]
+        assert str(candidate_config.agent.url) == "https://candidate.example/"
+        assert max_parallel_trials == 3
+        return baseline, candidate
+
+    monkeypatch.setattr(cli_module, "_run_pair", run_pair)
+    output = tmp_path / "diff.json"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "diff",
+            str(path),
+            "--against",
+            "https://candidate.example",
+            "--scenario",
+            "second",
+            "--jobs",
+            "3",
+            "--format",
+            "json",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["checks"][0]["change"] == "unchanged"
+
+
+def test_diff_renders_regression_and_uses_candidate_exit_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    baseline = SuiteResult(
+        passed=True,
+        duration_ms=1,
+        scenarios=[
+            ScenarioResult(
+                name="smoke",
+                passed=True,
+                passed_trials=1,
+                required_trials=1,
+                trials=[],
+            )
+        ],
+    )
+    candidate = SuiteResult(
+        passed=False,
+        duration_ms=1,
+        scenarios=[
+            ScenarioResult(
+                name="smoke",
+                passed=False,
+                passed_trials=0,
+                required_trials=1,
+                trials=[],
+            )
+        ],
+    )
+
+    async def run_pair(*args, **kwargs):
+        return baseline, candidate
+
+    monkeypatch.setattr(cli_module, "_run_pair", run_pair)
+
+    result = CliRunner().invoke(
+        main,
+        ["diff", str(path), "--against", "https://candidate.example"],
+    )
+
+    assert result.exit_code == 1
+    assert "regression" in result.output
+    assert "Candidate failed" in result.output
+
+    json_result = CliRunner().invoke(
+        main,
+        [
+            "diff",
+            str(path),
+            "--against",
+            "https://candidate.example",
+            "--format",
+            "json",
+        ],
+    )
+    assert json_result.exit_code == 1
+    assert json.loads(json_result.output)["passed"] is False
+
+
+def test_diff_validates_options_and_reports_errors(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+
+    terminal_output = CliRunner().invoke(
+        main,
+        [
+            "diff",
+            str(path),
+            "--against",
+            "https://candidate.example",
+            "--output",
+            str(tmp_path / "diff.json"),
+        ],
+    )
+    invalid_url = CliRunner().invoke(
+        main,
+        ["diff", str(path), "--against", "not a URL"],
+    )
+
+    assert terminal_output.exit_code == 2
+    assert "--output requires --format json" in terminal_output.output
+    assert invalid_url.exit_code == 2
+    assert "URL" in invalid_url.output
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("candidate unavailable")
+
+    monkeypatch.setattr(cli_module, "_run_pair", fail)
+    unavailable = CliRunner().invoke(
+        main,
+        ["diff", str(path), "--against", "https://candidate.example"],
+    )
+    assert unavailable.exit_code == 2
+    assert "candidate unavailable" in unavailable.output
+
+
+def test_diff_reports_output_write_error(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    suite = SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    async def run_pair(*args, **kwargs):
+        return suite, suite
+
+    def deny_write(self, content, encoding):
+        raise OSError("denied")
+
+    monkeypatch.setattr(cli_module, "_run_pair", run_pair)
+    monkeypatch.setattr(Path, "write_text", deny_write)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "diff",
+            str(path),
+            "--against",
+            "https://candidate.example",
+            "--format",
+            "json",
+            "--output",
+            str(tmp_path / "diff.json"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot write" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_pair_executes_baseline_before_candidate(monkeypatch) -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "scenarios": [{"name": "smoke", "message": "Hello"}],
+        }
+    )
+    calls: list[ProofConfig] = []
+
+    async def run(proof, *, max_parallel_trials):
+        assert max_parallel_trials == 2
+        calls.append(proof)
+        return SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    await cli_module._run_pair(config, config, max_parallel_trials=2)
+
+    assert calls == [config, config]
 
 
 def test_generates_bounded_unique_scenarios() -> None:

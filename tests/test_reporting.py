@@ -6,6 +6,8 @@ from rich.console import Console
 
 from a2a_proof.models import (
     CardResult,
+    DiffCheck,
+    DiffResult,
     LatencyResult,
     ScenarioResult,
     SuiteResult,
@@ -15,6 +17,8 @@ from a2a_proof.models import (
 from a2a_proof.reporting import (
     _diagnostic,
     _duration,
+    render_diff_json,
+    render_diff_terminal,
     render_json,
     render_junit,
     render_terminal,
@@ -71,6 +75,66 @@ def test_renders_machine_readable_json() -> None:
     assert '"passed": true' in rendered
     assert '"scenario' in rendered
     assert "private-evidence-metadata" not in rendered
+
+
+def test_renders_diff_in_terminal_and_json() -> None:
+    baseline = _result(passed=False)
+    candidate = _result(passed=True)
+    result = DiffResult(
+        passed=True,
+        baseline=baseline,
+        candidate=candidate,
+        checks=[
+            DiffCheck(
+                name="improved\x1b[31m",
+                baseline="failed",
+                candidate="passed",
+                change="improvement",
+            ),
+            DiffCheck(
+                name="regressed",
+                baseline="passed",
+                candidate="failed",
+                change="regression",
+            ),
+            DiffCheck(
+                name="blocked",
+                baseline="failed",
+                candidate="not_run",
+                change="changed",
+            ),
+            DiffCheck(
+                name="stable",
+                baseline="passed",
+                candidate="passed",
+                change="unchanged",
+            ),
+        ],
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_diff_terminal(result, console)
+
+    output = console.export_text()
+    assert "improved[31m" in output
+    assert "Candidate passed; 1 regressions, 1 improvements." in output
+    assert '"change": "improvement"' in render_diff_json(result)
+
+    failed_candidate = _result(passed=False)
+    failed_candidate.card = CardResult(passed=False, failures=["missing skill"])
+    failed = result.model_copy(
+        update={
+            "passed": False,
+            "candidate": failed_candidate,
+        }
+    )
+    failed_console = Console(record=True, color_system=None, width=100)
+    render_diff_terminal(failed, failed_console)
+    failed_output = failed_console.export_text()
+    assert "Candidate Agent Card" in failed_output
+    assert "missing skill" in failed_output
+    assert "missing[31m value" in failed_output
+    assert "Candidate failed" in failed_output
 
 
 def test_renders_success_and_trial_error() -> None:

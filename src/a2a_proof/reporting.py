@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from a2a_proof.models import ScenarioResult, SuiteResult
+from a2a_proof.models import DiffResult, ScenarioResult, SuiteResult
 
 MAX_DIAGNOSTIC_CHARS = 2_000
 MILLISECONDS_PER_SECOND = 1_000
@@ -59,6 +59,45 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
 
 
 def render_json(result: SuiteResult) -> str:
+    return result.model_dump_json(indent=2)
+
+
+def render_diff_terminal(result: DiffResult, console: Console) -> None:
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Baseline")
+    table.add_column("Candidate")
+    table.add_column("Change")
+    for check in result.checks:
+        table.add_row(
+            Text(_safe_text(check.name, single_line=True)),
+            _diff_status(check.baseline),
+            _diff_status(check.candidate),
+            _diff_change(check.change),
+        )
+    console.print(table)
+
+    if result.candidate.card is not None and not result.candidate.card.passed:
+        console.print(Text("\nCandidate Agent Card", style="bold red"))
+        for failure in result.candidate.card.failures:
+            console.print(Text(f"  {_diagnostic(failure)}"))
+    for scenario in result.candidate.scenarios:
+        if not scenario.passed:
+            _render_scenario_failures(scenario, console, verbose=False)
+
+    regressions = sum(check.change == "regression" for check in result.checks)
+    improvements = sum(check.change == "improvement" for check in result.checks)
+    status = "passed" if result.passed else "failed"
+    style = "bold green" if result.passed else "bold red"
+    console.print(
+        Text(
+            f"\nCandidate {status}; {regressions} regressions, {improvements} improvements.",
+            style=style,
+        )
+    )
+
+
+def render_diff_json(result: DiffResult) -> str:
     return result.model_dump_json(indent=2)
 
 
@@ -215,6 +254,16 @@ def _duration(milliseconds: int) -> str:
     if milliseconds < MILLISECONDS_PER_SECOND:
         return f"{milliseconds}ms"
     return f"{milliseconds / MILLISECONDS_PER_SECOND:.2f}s"
+
+
+def _diff_status(status: str) -> Text:
+    styles = {"passed": "green", "failed": "red", "not_run": "yellow"}
+    return Text(status.upper(), style=styles[status])
+
+
+def _diff_change(change: str) -> Text:
+    styles = {"regression": "red", "improvement": "green", "changed": "yellow"}
+    return Text(change, style=styles.get(change, ""))
 
 
 def _scenario_count(count: int) -> str:

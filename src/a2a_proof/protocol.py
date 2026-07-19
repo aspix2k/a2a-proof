@@ -90,10 +90,16 @@ class ResponseCollector:
             raise ProtocolError("agent returned an empty stream event")
         self._check_size()
 
-    def finish(self, *, duration_ms: int, first_event_ms: int | None = None) -> TurnOutcome:
+    def finish(
+        self,
+        *,
+        duration_ms: int,
+        first_event_ms: int | None = None,
+        require_terminal: bool = True,
+    ) -> TurnOutcome:
         if self._events == 0:
             raise ProtocolError("agent returned no response")
-        if self._state not in INTERRUPTED_STATES | {"message"}:
+        if require_terminal and self._state not in INTERRUPTED_STATES | {"message"}:
             raise ProtocolError(f"agent stream ended in non-terminal state {self._state!r}")
         contents = [*self._messages.values(), *self._artifacts.values()]
         text = "\n".join(content.text for content in contents if content.text)

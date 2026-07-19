@@ -6,13 +6,26 @@ from collections.abc import Iterator, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 import grpc
 import httpx
 import pytest
 import respx
 from a2a.helpers import get_data_parts
-from a2a.types import Message, Part, Role, SendMessageRequest, SendMessageResponse, a2a_pb2_grpc
+from a2a.types import (
+    CancelTaskRequest,
+    GetTaskRequest,
+    Message,
+    Part,
+    Role,
+    SendMessageRequest,
+    SendMessageResponse,
+    Task,
+    TaskState,
+    TaskStatus,
+    a2a_pb2_grpc,
+)
 from click.testing import CliRunner
 
 from a2a_proof.cli import main
@@ -22,10 +35,17 @@ from a2a_proof.runner import run
 TEST_EXTENSION = "https://example.com/extensions/structured-input/v1"
 
 
+class _AgentServer(ThreadingHTTPServer):
+    task_state = "TASK_STATE_WORKING"
+
+
 class _AgentHandler(BaseHTTPRequestHandler):
-    server: ThreadingHTTPServer
+    server: _AgentServer
 
     def do_GET(self) -> None:
+        if urlsplit(self.path).path == "/tasks/task":
+            self._send_json(200, self._task())
+            return
         if self.path != "/.well-known/agent-card.json":
             self._send_json(404, {"error": "not found"})
             return
@@ -67,11 +87,23 @@ class _AgentHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
+        if self.path == "/tasks/task:cancel":
+            self.server.task_state = "TASK_STATE_CANCELED"
+            self._send_json(200, self._task())
+            return
         if self.path not in {"/a2a", "/message:send"}:
             self._send_json(404, {"error": "not found"})
             return
         size = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(size))
+        if self.path == "/a2a" and request["method"] in {"CancelTask", "GetTask"}:
+            if request["method"] == "CancelTask":
+                self.server.task_state = "TASK_STATE_CANCELED"
+            self._send_json(
+                200,
+                {"jsonrpc": "2.0", "id": request["id"], "result": self._task()},
+            )
+            return
         payload = request["params"] if self.path == "/a2a" else request
         message = payload["message"]
         text = "".join(part.get("text", "") for part in message["parts"])
@@ -80,7 +112,10 @@ class _AgentHandler(BaseHTTPRequestHandler):
         if data and self.headers.get("A2A-Extensions") != TEST_EXTENSION:
             self._send_json(400, {"error": "missing extension activation"})
             return
-        if files:
+        if payload.get("configuration", {}).get("returnImmediately"):
+            self.server.task_state = "TASK_STATE_WORKING"
+            result = {"task": self._task()}
+        elif files:
             result = {
                 "task": {
                     "id": "task",
@@ -143,6 +178,23 @@ class _AgentHandler(BaseHTTPRequestHandler):
             result = {"jsonrpc": "2.0", "id": request["id"], "result": result}
         self._send_json(200, result)
 
+    def _task(self) -> dict[str, object]:
+        state = getattr(self.server, "task_state", "TASK_STATE_WORKING")
+        return {
+            "id": "task",
+            "contextId": "context",
+            "status": {"state": state},
+            "history": [
+                {
+                    "messageId": "stored",
+                    "contextId": "context",
+                    "taskId": "task",
+                    "role": "ROLE_AGENT",
+                    "parts": [{"text": "stored"}],
+                }
+            ],
+        }
+
     def _send_json(self, status: int, payload: object) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
@@ -155,6 +207,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
 class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
     def __init__(self) -> None:
         self.metadata: dict[str, str] = {}
+        self.task_state = TaskState.TASK_STATE_WORKING
 
     async def SendMessage(
         self,
@@ -166,6 +219,9 @@ class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
             context.invocation_metadata() or (),
         )
         self.metadata = {key: value for key, value in metadata if isinstance(value, str)}
+        if request.configuration.return_immediately:
+            self.task_state = TaskState.TASK_STATE_WORKING
+            return SendMessageResponse(task=self._task())
         text = "".join(part.text for part in request.message.parts if part.HasField("text"))
         data = get_data_parts(request.message.parts)
         response = f"data: {data[0]['value']}" if data else f"echo: {text}"
@@ -178,10 +234,41 @@ class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
             )
         )
 
+    async def CancelTask(
+        self,
+        request: CancelTaskRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> Task:
+        self.task_state = TaskState.TASK_STATE_CANCELED
+        return self._task()
+
+    async def GetTask(
+        self,
+        request: GetTaskRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> Task:
+        return self._task()
+
+    def _task(self) -> Task:
+        return Task(
+            id="task",
+            context_id="context",
+            status=TaskStatus(state=self.task_state),
+            history=[
+                Message(
+                    message_id="stored",
+                    context_id="context",
+                    task_id="task",
+                    role=Role.ROLE_AGENT,
+                    parts=[Part(text="stored")],
+                )
+            ],
+        )
+
 
 @pytest.fixture
 def agent_url() -> Iterator[str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _AgentHandler)
+    server = _AgentServer(("127.0.0.1", 0), _AgentHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host = str(server.server_address[0])
@@ -231,6 +318,43 @@ async def test_runs_real_http_json_exchange(agent_url: str) -> None:
                     "name": "structured echo",
                     "data": {"value": "Hello"},
                     "expect": {"text": {"equals": "data: Hello"}},
+                }
+            ],
+        }
+    )
+
+    assert (await run(config)).passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["JSONRPC", "HTTP+JSON"])
+async def test_runs_task_lifecycle_contract_over_real_http_transports(
+    agent_url: str,
+    transport: str,
+) -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": agent_url, "transport": transport},
+            "scenarios": [
+                {
+                    "name": "cancel and retrieve",
+                    "turns": [
+                        {
+                            "message": "Start a long task",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {"action": "cancel", "expect": {"state": "canceled"}},
+                        {
+                            "action": "get_task",
+                            "history_length": 5,
+                            "expect": {
+                                "state": "canceled",
+                                "text": {"contains": "stored"},
+                            },
+                        },
+                    ],
                 }
             ],
         }
@@ -383,7 +507,26 @@ async def test_runs_real_grpc_exchange() -> None:
                     "name": "structured echo",
                     "data": {"value": "Hello"},
                     "expect": {"text": {"equals": "data: Hello"}},
-                }
+                },
+                {
+                    "name": "cancel and retrieve",
+                    "turns": [
+                        {
+                            "message": "Start a long task",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {"action": "cancel", "expect": {"state": "canceled"}},
+                        {
+                            "action": "get_task",
+                            "history_length": 5,
+                            "expect": {
+                                "state": "canceled",
+                                "text": {"contains": "stored"},
+                            },
+                        },
+                    ],
+                },
             ],
         }
     )
@@ -407,3 +550,33 @@ def test_cli_init_then_run_against_real_agent(agent_url: str, tmp_path: Path) ->
     assert "message: Hello" in config.read_text(encoding="utf-8")
     assert executed.exit_code == 0
     assert "PASS" in executed.output
+
+
+def test_cli_diff_against_real_agent(agent_url: str, tmp_path: Path) -> None:
+    config = tmp_path / "a2a-proof.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "agent:",
+                f"  url: {agent_url}",
+                "scenarios:",
+                "  - name: echo",
+                "    message: Hello",
+                "    expect:",
+                "      text:",
+                "        equals: 'echo: Hello'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["diff", str(config), "--against", agent_url],
+    )
+
+    assert result.exit_code == 0
+    assert "unchanged" in result.output.lower()
+    assert "echo" in result.output

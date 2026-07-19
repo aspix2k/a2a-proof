@@ -23,6 +23,8 @@ from a2a.types import (
     AgentExtension,
     AgentInterface,
     Artifact,
+    CancelTaskRequest,
+    GetTaskRequest,
     Message,
     Part,
     Role,
@@ -80,12 +82,18 @@ def _agent_card(url: str = "https://example.com/a2a") -> dict[str, object]:
 
 
 class _FakeClient:
-    def __init__(self, responses: list[StreamResponse], *, delay: float = 0) -> None:
+    def __init__(self, responses: list[StreamResponse]) -> None:
         self.responses = responses
-        self.delay = delay
         self.request: SendMessageRequest | None = None
         self.context: ClientCallContext | None = None
         self.closed = False
+        self.cancel_request: CancelTaskRequest | None = None
+        self.get_request: GetTaskRequest | None = None
+        self.task_response = Task(
+            id="task",
+            context_id="context",
+            status=TaskStatus(state=TaskState.TASK_STATE_CANCELED),
+        )
 
     async def send_message(
         self,
@@ -95,13 +103,39 @@ class _FakeClient:
     ) -> AsyncIterator[StreamResponse]:
         self.request = request
         self.context = context
-        if self.delay:
-            await asyncio.sleep(self.delay)
         for response in self.responses:
             yield response
 
     async def close(self) -> None:
         self.closed = True
+
+    async def cancel_task(
+        self,
+        request: CancelTaskRequest,
+        *,
+        context: ClientCallContext | None = None,
+    ) -> Task:
+        self.cancel_request = request
+        self.context = context
+        return self.task_response
+
+    async def get_task(
+        self,
+        request: GetTaskRequest,
+        *,
+        context: ClientCallContext | None = None,
+    ) -> Task:
+        self.get_request = request
+        self.context = context
+        return self.task_response
+
+
+class _ForcedTimeout:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        raise TimeoutError
 
 
 def test_collects_direct_message() -> None:
@@ -782,6 +816,7 @@ async def test_session_sends_context_and_closes_client(monkeypatch: pytest.Monke
     assert client.context is not None
     assert client.request.message.context_id == "context"
     assert client.request.message.task_id == "task"
+    assert not client.request.HasField("configuration")
     assert get_message_text(client.request.message) == "Hi"
     assert client.context.timeout == 2
     assert client.context.service_parameters == {"Authorization": "Bearer secret"}
@@ -853,9 +888,104 @@ async def test_session_records_only_the_first_event_time(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_session_reports_timeout() -> None:
-    client = _FakeClient([], delay=0.05)
-    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=0.001)
+async def test_session_uses_non_streaming_client_for_immediate_task() -> None:
+    streaming_client = _FakeClient([])
+    lifecycle_client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            )
+        ]
+    )
+    session = A2ASession(
+        cast(Client, streaming_client),
+        AgentCard(name="Agent"),
+        timeout=2,
+        lifecycle_client=cast(Client, lifecycle_client),
+    )
+
+    outcome = await session.send_turn(
+        "Start",
+        context_id="context",
+        task_id=None,
+        return_immediately=True,
+    )
+
+    assert outcome.state == "working"
+    assert streaming_client.request is None
+    assert lifecycle_client.request is not None
+    assert lifecycle_client.request.configuration.return_immediately
+
+
+@pytest.mark.asyncio
+async def test_session_runs_cancel_and_get_task_operations() -> None:
+    client = _FakeClient([])
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent"),
+        timeout=2,
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    canceled = await session.cancel_task(task_id="task", context_id="fallback")
+    retrieved = await session.get_task(
+        task_id="task",
+        context_id="fallback",
+        history_length=7,
+    )
+
+    assert canceled.state == "canceled"
+    assert retrieved.task_id == "task"
+    assert client.cancel_request == CancelTaskRequest(id="task")
+    assert client.get_request == GetTaskRequest(id="task", history_length=7)
+    assert client.context is not None
+    assert client.context.service_parameters == {"Authorization": "Bearer secret"}
+
+    await session.get_task(task_id="task", context_id="fallback")
+    assert client.get_request is not None
+    assert not client.get_request.HasField("history_length")
+
+
+@pytest.mark.asyncio
+async def test_session_reports_task_operation_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient([])
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=2)
+    monkeypatch.setattr(a2a_module.asyncio, "timeout", lambda seconds: _ForcedTimeout())
+
+    with pytest.raises(ProtocolError, match="did not cancel task"):
+        await session.cancel_task(task_id="task", context_id="context")
+    with pytest.raises(ProtocolError, match="did not return task"):
+        await session.get_task(task_id="task", context_id="context")
+
+
+@pytest.mark.asyncio
+async def test_session_closes_both_clients() -> None:
+    streaming_client = _FakeClient([])
+    lifecycle_client = _FakeClient([])
+    session = A2ASession(
+        cast(Client, streaming_client),
+        AgentCard(name="Agent"),
+        timeout=2,
+        lifecycle_client=cast(Client, lifecycle_client),
+    )
+
+    await session.close()
+
+    assert streaming_client.closed
+    assert lifecycle_client.closed
+
+
+@pytest.mark.asyncio
+async def test_session_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _FakeClient([])
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=2)
+    monkeypatch.setattr(a2a_module.asyncio, "timeout", lambda seconds: _ForcedTimeout())
 
     with pytest.raises(ProtocolError, match="did not finish within"):
         await session.send_turn("Hi", context_id="context", task_id=None)
@@ -871,6 +1001,72 @@ async def test_connect_builds_client_for_discovered_card() -> None:
     session = await A2ASession.connect(AgentConfig(url="https://example.com"))
     assert session.card.name == "Test agent"
     await session.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_connect_builds_non_streaming_client_for_streaming_agent() -> None:
+    card = _agent_card()
+    card["capabilities"] = {"streaming": True}
+    respx.get("https://example.com/.well-known/agent-card.json").mock(
+        return_value=httpx.Response(200, json=card)
+    )
+
+    session = await A2ASession.connect(AgentConfig(url="https://example.com"))
+
+    assert session._lifecycle_client is not session._client
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_closes_resources_when_lifecycle_client_creation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_http = AsyncMock()
+    lifecycle_http = AsyncMock()
+    clients = iter([primary_http, lifecycle_http])
+    primary_client = _FakeClient([])
+    factory = Mock()
+    factory.return_value.create.side_effect = [primary_client, RuntimeError("factory failed")]
+    card = AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True))
+
+    monkeypatch.setattr(a2a_module, "_http_client", lambda config: next(clients))
+    monkeypatch.setattr(a2a_module, "_resolve_card", AsyncMock(return_value=card))
+    monkeypatch.setattr(a2a_module, "ClientFactory", factory)
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        await A2ASession.connect(AgentConfig(url="https://example.com"))
+
+    assert primary_client.closed
+    lifecycle_http.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_closes_both_clients_when_session_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_http = AsyncMock()
+    lifecycle_http = AsyncMock()
+    clients = iter([primary_http, lifecycle_http])
+    primary_client = _FakeClient([])
+    lifecycle_client = _FakeClient([])
+    factory = Mock()
+    factory.return_value.create.side_effect = [primary_client, lifecycle_client]
+    card = AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True))
+
+    class BrokenSession(A2ASession):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("construction failed")
+
+    monkeypatch.setattr(a2a_module, "_http_client", lambda config: next(clients))
+    monkeypatch.setattr(a2a_module, "_resolve_card", AsyncMock(return_value=card))
+    monkeypatch.setattr(a2a_module, "ClientFactory", factory)
+
+    with pytest.raises(RuntimeError, match="construction failed"):
+        await BrokenSession.connect(AgentConfig(url="https://example.com"))
+
+    assert primary_client.closed
+    assert lifecycle_client.closed
 
 
 @pytest.mark.asyncio

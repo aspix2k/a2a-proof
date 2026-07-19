@@ -989,7 +989,132 @@
     },
     "Turn": {
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "message"
+              ]
+            },
+            {
+              "required": [
+                "data"
+              ]
+            },
+            {
+              "required": [
+                "files"
+              ]
+            }
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "action"
+                ]
+              },
+              {
+                "required": [
+                  "history_length"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "message"
+                ]
+              },
+              {
+                "required": [
+                  "data"
+                ]
+              },
+              {
+                "required": [
+                  "files"
+                ]
+              },
+              {
+                "required": [
+                  "return_immediately"
+                ]
+              },
+              {
+                "required": [
+                  "history_length"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "action": {
+              "const": "cancel"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "message"
+                ]
+              },
+              {
+                "required": [
+                  "data"
+                ]
+              },
+              {
+                "required": [
+                  "files"
+                ]
+              },
+              {
+                "required": [
+                  "return_immediately"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "action": {
+              "const": "get_task"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      ],
       "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "enum": [
+                "cancel",
+                "get_task"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Task lifecycle operation using the preceding task ID.",
+          "title": "Action"
+        },
         "data": {
           "anyOf": [
             {
@@ -1021,6 +1146,21 @@
           "title": "Files",
           "type": "array"
         },
+        "history_length": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Task history entries requested by a get_task action.",
+          "title": "History Length"
+        },
         "message": {
           "anyOf": [
             {
@@ -1035,6 +1175,12 @@
           "default": null,
           "description": "Text sent to the agent.",
           "title": "Message"
+        },
+        "return_immediately": {
+          "default": false,
+          "description": "Ask the agent to return the initial task state without waiting.",
+          "title": "Return Immediately",
+          "type": "boolean"
         }
       },
       "title": "Turn",

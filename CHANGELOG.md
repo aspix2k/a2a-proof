@@ -7,6 +7,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-19
+
+### Features
+
+- Added black-box cancellation contracts. A multi-turn scenario can request an initial
+  non-terminal task with `return_immediately: true`, invoke the protocol-level `cancel` operation,
+  and assert the returned task state, content, timing, files, data, and invariants.
+- Added task persistence contracts through `action: get_task`, with optional bounded
+  `history_length`. Task IDs and contexts flow between message, cancel, and retrieval turns without
+  exposing transport-specific methods in the configuration.
+- Added `a2a-proof diff --against URL` for running one selected contract against baseline and
+  candidate deployments. Terminal and JSON output classify Agent Card and scenario outcomes as
+  regressions, improvements, changed, or unchanged; the candidate contract result controls the
+  exit status.
+- Kept lifecycle behavior portable across JSON-RPC, HTTP+JSON, and gRPC. Streaming agents use a
+  dedicated non-streaming client for the A2A `return_immediately` request while normal scenarios
+  retain streaming state trajectories and first-event timing.
+
+### Security
+
+- Applied the existing URL credential rejection, Agent Card origin checks, redirect policy,
+  request headers, extensions, response bounds, and timeouts to lifecycle and candidate diff runs.
+- Kept differential comparison at the contract-result layer instead of fetching or comparing
+  untrusted remote resources; response file URLs remain passive and omitted from reports.
+
+### Documentation
+
+- Added a complete cancellation-and-persistence contract and documented lifecycle ordering,
+  missing-task behavior, history limits, diff classifications, and diff exit codes.
+- Kept the README focused on first use and moved contract, assertion, lifecycle, and operational
+  reference material into short topic guides.
+
+### Maintenance
+
+- Added real lifecycle exchanges for every supported transport and a real CLI deployment diff;
+  272 tests retain complete statement and branch coverage across the expanded surface.
+- Added lifecycle configuration constraints to the generated JSON Schema and differential result
+  classification to mutation testing, with 98.8% of 2,362 mutants killed.
+
 ## 0.6.0 - 2026-07-19
 
 ### Security
