@@ -31,3 +31,10 @@ The deterministic core also has mutation tests:
 uv run mutmut run --max-children 1
 uv run mutmut results
 ```
+
+## Releasing
+
+Update the version in `pyproject.toml`, refresh `uv.lock`, and move the changelog entries out of
+`Unreleased`. After CI passes on `main`, create and push the matching `vX.Y.Z` tag. The release
+workflow rebuilds and tests the package, verifies the tag version, records build provenance, and
+publishes immutable GitHub release assets. Never move or reuse a release tag.

@@ -7,6 +7,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.1.1 - 2026-07-19
+
+### Added
+
+- Issue forms and a pull request template for focused contributions.
+- SHA-256 checksums for release artifacts.
+- CI runs on Linux, macOS, and Windows.
+
+### Changed
+
+- Clarify the boundary between behavioral contract testing, the A2A TCK, and the A2A Inspector.
+- Show successful and failed command output in the README.
+
+### Security
+
+- Enable GitHub dependency alerts and automated security updates.
+
 ## 0.1.0 - 2026-07-19
 
 ### Added
