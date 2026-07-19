@@ -1,0 +1,41 @@
+name: Mutation tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    name: Mutation score
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen --all-groups
+      - run: uv run --frozen mutmut run --max-children 1
+      - run: uv run --frozen mutmut export-cicd-stats
+      - name: Require a 95% mutation score
+        run: |
+          uv run --frozen python - <<'PY'
+          import json
+          from pathlib import Path
+
+          stats = json.loads(Path("mutants/mutmut-cicd-stats.json").read_text())
+          score = stats["killed"] / stats["total"]
+          print(f"mutation score: {score:.1%}")
+          invalid = ("no_tests", "suspicious", "timeout", "segfault")
+          raise SystemExit(score < 0.95 or any(stats[key] for key in invalid))
+          PY

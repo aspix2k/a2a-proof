@@ -1,0 +1,14 @@
+.coverage
+.DS_Store
+.idea/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+build/
+dist/
+htmlcov/
+mutants/
+coverage.xml
+*.egg-info/
+*.py[cod]
