@@ -21,6 +21,13 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
     table.add_column("Trials", justify="right")
     table.add_column("Time", justify="right")
 
+    if result.card is not None:
+        table.add_row(
+            Text("PASS", style="green") if result.card.passed else Text("FAIL", style="red"),
+            "Agent Card",
+            "—",
+            "—",
+        )
     for scenario in result.scenarios:
         elapsed = sum(trial.duration_ms for trial in scenario.trials)
         table.add_row(
@@ -30,6 +37,11 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
             _duration(elapsed),
         )
     console.print(table)
+
+    if result.card is not None and not result.card.passed:
+        console.print(Text("\nAgent Card", style="bold red"))
+        for failure in result.card.failures:
+            console.print(Text(f"  {_diagnostic(failure)}"))
 
     for scenario in result.scenarios:
         if scenario.passed:
@@ -53,8 +65,7 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
     style = "bold green" if result.passed else "bold red"
     console.print(
         Text(
-            f"\n{_scenario_count(len(result.scenarios))} {status} "
-            f"in {_duration(result.duration_ms)}",
+            f"\n{_result_count(result)} {status} in {_duration(result.duration_ms)}",
             style=style,
         )
     )
@@ -66,18 +77,29 @@ def render_json(result: SuiteResult) -> str:
 
 def render_junit(result: SuiteResult) -> str:
     trials = [trial for scenario in result.scenarios for trial in scenario.trials]
-    failures = sum(not trial.passed and trial.error is None for trial in trials)
+    card_failed = result.card is not None and not result.card.passed
+    failures = sum(not trial.passed and trial.error is None for trial in trials) + card_failed
     errors = sum(trial.error is not None for trial in trials)
     suite = ET.Element(
         "testsuite",
         {
             "name": "a2a-proof",
-            "tests": str(len(trials)),
+            "tests": str(len(trials) + (result.card is not None)),
             "failures": str(failures),
             "errors": str(errors),
             "time": f"{result.duration_ms / MILLISECONDS_PER_SECOND:.3f}",
         },
     )
+    if result.card is not None:
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            {"classname": "a2a-proof", "name": "Agent Card", "time": "0.000"},
+        )
+        if not result.card.passed:
+            message = _xml_text(_diagnostic("; ".join(result.card.failures)))
+            failure = ET.SubElement(case, "failure", {"message": message})
+            failure.text = _xml_text("\n".join(result.card.failures))
     for scenario in result.scenarios:
         for trial in scenario.trials:
             name = scenario.name
@@ -141,3 +163,8 @@ def _duration(milliseconds: int) -> str:
 
 def _scenario_count(count: int) -> str:
     return f"{count} scenario{'s' if count != 1 else ''}"
+
+
+def _result_count(result: SuiteResult) -> str:
+    scenarios = _scenario_count(len(result.scenarios))
+    return f"Agent Card and {scenarios}" if result.card is not None else scenarios

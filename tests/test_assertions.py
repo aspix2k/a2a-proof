@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import pytest
+from a2a.types import AgentCard, AgentSkill
 
 import a2a_proof.assertions as assertions_module
-from a2a_proof.assertions import evaluate
-from a2a_proof.models import DataExpectation, DataPartResult, Expectation, TextExpectation
+from a2a_proof.assertions import evaluate, evaluate_card
+from a2a_proof.models import (
+    AgentCapabilitiesExpectation,
+    AgentCardExpectation,
+    DataExpectation,
+    DataPartResult,
+    Expectation,
+    FileExpectation,
+    FilePartResult,
+    StateSequenceExpectation,
+    TextExpectation,
+)
 from a2a_proof.protocol import TurnOutcome
 
 
@@ -15,6 +26,8 @@ def _outcome(
     duration_ms: int = 100,
     first_event_ms: int | None = 50,
     data: tuple[DataPartResult, ...] = (),
+    states: tuple[str, ...] = ("working", "completed"),
+    files: tuple[FilePartResult, ...] = (),
 ) -> TurnOutcome:
     return TurnOutcome(
         state=state,
@@ -24,6 +37,8 @@ def _outcome(
         duration_ms=duration_ms,
         data=data,
         first_event_ms=first_event_ms,
+        states=states,
+        files=files,
     )
 
 
@@ -99,6 +114,117 @@ def test_first_event_limit_is_inclusive_and_requires_timing() -> None:
 def test_normalizes_state_separators() -> None:
     assert evaluate(Expectation(state=" INPUT-REQUIRED "), _outcome(state="input_required")) == []
     assert evaluate(Expectation(state="input required"), _outcome(state="input_required")) == []
+
+
+def test_checks_exact_and_partial_state_trajectories() -> None:
+    exact = Expectation(
+        states=StateSequenceExpectation(equals=["WORKING", "input-required", "completed"])
+    )
+    partial = Expectation(
+        states=StateSequenceExpectation(contains_in_order=["working", "completed"])
+    )
+    outcome = _outcome(states=("working", "input_required", "completed"))
+
+    assert evaluate(exact, outcome) == []
+    assert evaluate(partial, outcome) == []
+    assert evaluate(
+        Expectation(states=StateSequenceExpectation(equals=["working", "completed"])), outcome
+    ) == [
+        "expected state sequence ['working', 'completed'], got "
+        "['working', 'input_required', 'completed']"
+    ]
+    assert evaluate(
+        Expectation(states=StateSequenceExpectation(contains_in_order=["completed", "working"])),
+        outcome,
+    ) == [
+        "expected state sequence to contain ['completed', 'working'] in order, got "
+        "['working', 'input_required', 'completed']"
+    ]
+
+
+def test_matches_file_parts_by_metadata_and_exact_count() -> None:
+    files = (
+        FilePartResult(
+            source="message",
+            kind="raw",
+            filename="progress.txt",
+            media_type="text/plain",
+            size_bytes=3,
+        ),
+        FilePartResult(
+            source="artifact",
+            kind="url",
+            filename="report.pdf",
+            media_type="application/pdf",
+            artifact_name="report",
+        ),
+    )
+    expectation = Expectation(
+        files=[
+            FileExpectation(
+                source="artifact",
+                artifact_name="report",
+                filename="report.pdf",
+                media_type="APPLICATION/PDF",
+                kind="url",
+            ),
+            FileExpectation(kind="raw", count=1),
+            FileExpectation(media_type="image/png", count=0),
+        ]
+    )
+
+    assert evaluate(expectation, _outcome(files=files)) == []
+    assert evaluate(
+        Expectation(files=[FileExpectation(filename="missing.pdf")]),
+        _outcome(files=files),
+    ) == ["expected 1 file part(s) matching filename 'missing.pdf', got 0"]
+    assert evaluate(
+        Expectation(files=[FileExpectation(count=1)]),
+        _outcome(files=files),
+    ) == ["expected 1 file part(s) matching all file parts, got 2"]
+    assert evaluate(
+        Expectation(
+            files=[
+                FileExpectation(
+                    source="artifact",
+                    artifact_name="report",
+                    filename="report.pdf",
+                    media_type="application/pdf",
+                    kind="url",
+                    count=2,
+                )
+            ]
+        ),
+        _outcome(files=files),
+    ) == [
+        "expected 2 file part(s) matching source 'artifact', artifact name 'report', "
+        "filename 'report.pdf', media type 'application/pdf', kind 'url', got 1"
+    ]
+
+
+def test_checks_a_single_agent_card_capability() -> None:
+    expectation = AgentCardExpectation(capabilities=AgentCapabilitiesExpectation(streaming=False))
+
+    assert evaluate_card(expectation, AgentCard(name="Agent")) == []
+    skills_only = AgentCardExpectation.model_validate({"skills": {"contains": "echo"}})
+    assert (
+        evaluate_card(
+            skills_only,
+            AgentCard(name="Agent", skills=[AgentSkill(id="echo")]),
+        )
+        == []
+    )
+    assert evaluate_card(
+        skills_only,
+        AgentCard(name="Agent", skills=[AgentSkill(id="ECHO")]),
+    ) == ["Agent Card does not contain skill ID 'echo'"]
+
+    extended = AgentCardExpectation(
+        capabilities=AgentCapabilitiesExpectation(extended_agent_card=True)
+    )
+    assert evaluate_card(extended, AgentCard(name="Agent")) == [
+        "expected Agent Card capability 'extended agent card' to be True, got False"
+    ]
 
 
 def test_equals_respects_case_sensitivity() -> None:

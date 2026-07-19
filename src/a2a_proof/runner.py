@@ -5,9 +5,13 @@ from collections.abc import Awaitable, Callable
 from time import perf_counter
 from uuid import uuid4
 
+from a2a.types import AgentCard
+
 from a2a_proof.a2a import A2ASession
-from a2a_proof.assertions import evaluate
+from a2a_proof.assertions import evaluate, evaluate_card
+from a2a_proof.files import prepare_files
 from a2a_proof.models import (
+    CardResult,
     ProofConfig,
     Scenario,
     ScenarioResult,
@@ -22,22 +26,45 @@ SendTurn = Callable[..., Awaitable[TurnOutcome]]
 
 async def run(config: ProofConfig) -> SuiteResult:
     async with await A2ASession.connect(config.agent) as session:
-        return await run_with_sender(config, session.send_turn)
+        return await run_with_sender(config, session.send_turn, card=session.card)
 
 
-async def run_with_sender(config: ProofConfig, send_turn: SendTurn) -> SuiteResult:
+async def run_with_sender(
+    config: ProofConfig,
+    send_turn: SendTurn,
+    *,
+    card: AgentCard | None = None,
+) -> SuiteResult:
     started = perf_counter()
-    scenarios = [await _run_scenario(scenario, send_turn) for scenario in config.scenarios]
+    card_result: CardResult | None = None
+    if config.card is not None:
+        if card is None:
+            raise ValueError("Agent Card is required for configured card assertions")
+        failures = evaluate_card(config.card, card)
+        card_result = CardResult(passed=not failures, failures=failures)
+    scenarios = []
+    if card_result is None or card_result.passed:
+        scenarios = [
+            await _run_scenario(scenario, send_turn, config)
+            for scenario in config.resolved_scenarios()
+        ]
     return SuiteResult(
-        passed=all(scenario.passed for scenario in scenarios),
+        passed=(card_result is None or card_result.passed)
+        and all(scenario.passed for scenario in scenarios),
         duration_ms=round((perf_counter() - started) * 1_000),
+        card=card_result,
         scenarios=scenarios,
     )
 
 
-async def _run_scenario(scenario: Scenario, send_turn: SendTurn) -> ScenarioResult:
+async def _run_scenario(
+    scenario: Scenario,
+    send_turn: SendTurn,
+    config: ProofConfig,
+) -> ScenarioResult:
     trials = [
-        await _run_trial(index, scenario, send_turn) for index in range(1, scenario.trials + 1)
+        await _run_trial(index, scenario, send_turn, config)
+        for index in range(1, scenario.trials + 1)
     ]
     passed_trials = sum(trial.passed for trial in trials)
     required_trials = math.ceil(scenario.trials * scenario.pass_rate)
@@ -50,7 +77,12 @@ async def _run_scenario(scenario: Scenario, send_turn: SendTurn) -> ScenarioResu
     )
 
 
-async def _run_trial(index: int, scenario: Scenario, send_turn: SendTurn) -> TrialResult:
+async def _run_trial(
+    index: int,
+    scenario: Scenario,
+    send_turn: SendTurn,
+    config: ProofConfig,
+) -> TrialResult:
     started = perf_counter()
     context_id = str(uuid4())
     task_id: str | None = None
@@ -61,6 +93,7 @@ async def _run_trial(index: int, scenario: Scenario, send_turn: SendTurn) -> Tri
             outcome = await send_turn(
                 turn.message,
                 data=turn.data,
+                files=prepare_files(turn.files, config.contract_dir),
                 context_id=context_id,
                 task_id=task_id,
             )
@@ -70,10 +103,12 @@ async def _run_trial(index: int, scenario: Scenario, send_turn: SendTurn) -> Tri
                     index=turn_index,
                     passed=not failures,
                     state=outcome.state,
+                    states=list(outcome.states),
                     duration_ms=outcome.duration_ms,
                     first_event_ms=outcome.first_event_ms,
                     text=outcome.text,
                     data=list(outcome.data),
+                    files=list(outcome.files),
                     failures=failures,
                 )
             )

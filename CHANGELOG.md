@@ -7,6 +7,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-19
+
+### Features
+
+- Added end-to-end file contracts for A2A 1.0 `raw` and `url` parts. Scenarios can send local
+  files, assert response file metadata and counts, and preserve safe metadata in JSON reports.
+- Added Agent Card preflight assertions for skill IDs, streaming and notification capabilities,
+  extended cards, and default input and output modes. A failed preflight stops before the first
+  scenario message.
+- Added exact and ordered-subsequence assertions for observed task-state trajectories, with
+  consecutive duplicate states collapsed.
+- Added top-level `defaults` for `trials` and `pass_rate`, while preserving explicit scenario
+  values.
+
+### Security
+
+- Confined input files to the contract directory after symlink resolution and rejected missing,
+  non-regular, oversized, and cross-directory inputs during configuration checks.
+- Bounded file input to 20 files, 10 MB per file, and 20 MB per turn; bounded response file counts,
+  inline bytes, metadata, and URL length.
+- Kept remote file parts passive: URLs are neither fetched nor included in reports, which avoids
+  following untrusted locations or persisting signed query parameters.
+
+### Maintenance
+
+- Extended real JSON-RPC coverage to Agent Card, file upload, file response, and state-trajectory
+  contracts while retaining complete statement and branch coverage.
+- Added file handling to the mutation target and raised the full deterministic-core mutation score
+  above 99%.
+- Updated the generated JSON Schema for file shorthand, card assertions, state-sequence
+  exclusivity, and scenario defaults.
+
+### Documentation
+
+- Added complete configuration examples and precise semantics for Agent Card checks, file parts,
+  state trajectories, defaults, path confinement, and file limits.
+
 ## 0.4.0 - 2026-07-19
 
 ### Features

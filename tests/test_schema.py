@@ -32,12 +32,23 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
                 {
                     "name": "structured",
                     "data": {"action": "forecast"},
+                    "files": [
+                        "fixtures/report.pdf",
+                        {"path": "fixtures/report.pdf", "media_type": "application/pdf"},
+                    ],
                     "expect": {
                         "text": {"contains": "Paris"},
                         "data": {"path": "/temperature", "gte": 20, "lt": 30},
+                        "states": {"contains_in_order": ["working", "completed"]},
+                        "files": {"media_type": "application/pdf", "count": 1},
                     },
                 }
             ],
+            "card": {
+                "skills": {"contains": "summarize"},
+                "capabilities": {"streaming": True},
+            },
+            "defaults": {"trials": 3, "pass_rate": 0.66},
         }
     )
 
@@ -78,6 +89,34 @@ def test_schema_requires_one_structured_assertion_type() -> None:
     assert not validator.is_valid(configuration({"path": "/value"}))
     assert not validator.is_valid(configuration({"equals": 1, "gt": 0}))
     assert validator.is_valid(configuration({"gte": 0, "lt": 10}))
+
+
+def test_schema_requires_nonempty_card_and_exclusive_state_sequence() -> None:
+    validator = Draft202012Validator(config_schema())
+    base = {
+        "version": 1,
+        "agent": {"url": "https://example.com"},
+        "scenarios": [{"name": "smoke", "message": "Hello"}],
+    }
+
+    assert not validator.is_valid({**base, "card": {}})
+    assert not validator.is_valid(
+        {
+            **base,
+            "scenarios": [
+                {
+                    "name": "smoke",
+                    "message": "Hello",
+                    "expect": {
+                        "states": {
+                            "equals": ["completed"],
+                            "contains_in_order": ["completed"],
+                        }
+                    },
+                }
+            ],
+        }
+    )
 
 
 def test_schema_has_stable_identity() -> None:

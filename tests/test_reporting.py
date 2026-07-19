@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 
 from rich.console import Console
 
-from a2a_proof.models import ScenarioResult, SuiteResult, TrialResult, TurnResult
+from a2a_proof.models import CardResult, ScenarioResult, SuiteResult, TrialResult, TurnResult
 from a2a_proof.reporting import (
     _diagnostic,
     _duration,
@@ -110,4 +110,41 @@ def test_renders_junit_failures_errors_and_trials() -> None:
     passing_case = passing.find("testcase")
     assert passing_case is not None
     assert passing_case.attrib["name"] == "scenario[31m"
+    assert passing_case.find("failure") is None
+
+
+def test_renders_failed_agent_card_in_all_formats() -> None:
+    result = SuiteResult(
+        passed=False,
+        duration_ms=2,
+        card=CardResult(
+            passed=False,
+            failures=["Agent Card does not contain skill ID 'summarize'"],
+        ),
+        scenarios=[],
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_terminal(result, console, verbose=False)
+    root = ET.fromstring(render_junit(result))
+
+    output = console.export_text()
+    assert "Agent Card" in output
+    assert "Agent Card and 0 scenarios failed" in output
+    assert '"card"' in render_json(result)
+    assert root.attrib["tests"] == "1"
+    assert root.attrib["failures"] == "1"
+    case = root.find("testcase")
+    assert case is not None
+    assert case.attrib["name"] == "Agent Card"
+    assert case.find("failure") is not None
+
+    passing = SuiteResult(
+        passed=True,
+        duration_ms=1,
+        card=CardResult(passed=True),
+        scenarios=[],
+    )
+    passing_case = ET.fromstring(render_junit(passing)).find("testcase")
+    assert passing_case is not None
     assert passing_case.find("failure") is None

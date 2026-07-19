@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Self
 
 import regex
@@ -14,6 +15,7 @@ from pydantic import (
     Field,
     HttpUrl,
     JsonValue,
+    PrivateAttr,
     TypeAdapter,
     ValidationError,
     field_validator,
@@ -22,8 +24,10 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 NonEmptyText = Annotated[str, Field(min_length=1, max_length=100_000)]
+StateName = Annotated[str, Field(min_length=1, max_length=64)]
 ExtensionUri = Annotated[str, Field(min_length=1, max_length=1_000)]
 MAX_INPUT_DATA_BYTES = 1_000_000
+MAX_INPUT_FILES = 20
 MAX_EXTENSIONS = 20
 MAX_EXTENSION_PARAMETER_CHARS = 8_000
 MAX_JSON_SCHEMA_BYTES = 100_000
@@ -34,6 +38,107 @@ _DATA_PREDICATES = {"equals", "exists", "matches", "gt", "gte", "lt", "lte", "js
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class ContainsExpectation(StrictModel):
+    contains: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=200)]],
+        Field(min_length=1, max_length=100, description="Required values."),
+    ]
+
+    @field_validator("contains", mode="before", json_schema_input_type=str | list[str])
+    @classmethod
+    def accept_single_value(cls, value: object) -> object:
+        return [value] if isinstance(value, str) else value
+
+
+class AgentCapabilitiesExpectation(StrictModel):
+    streaming: bool | SkipJsonSchema[None] = None
+    push_notifications: bool | SkipJsonSchema[None] = None
+    extended_agent_card: bool | SkipJsonSchema[None] = None
+
+    @model_validator(mode="after")
+    def require_capability(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("capabilities must define at least one assertion")
+        if any(getattr(self, name) is None for name in self.model_fields_set):
+            raise ValueError("capability assertions cannot be null")
+        return self
+
+
+class AgentCardExpectation(StrictModel):
+    skills: ContainsExpectation | SkipJsonSchema[None] = Field(
+        default=None,
+        description="Required Agent Card skill IDs.",
+    )
+    capabilities: AgentCapabilitiesExpectation | SkipJsonSchema[None] = None
+    input_modes: ContainsExpectation | SkipJsonSchema[None] = None
+    output_modes: ContainsExpectation | SkipJsonSchema[None] = None
+
+    @model_validator(mode="after")
+    def require_assertion(self) -> Self:
+        if not self.model_fields_set or any(
+            getattr(self, name) is None for name in self.model_fields_set
+        ):
+            raise ValueError("card must define at least one assertion")
+        return self
+
+
+class FileInput(StrictModel):
+    path: Annotated[
+        str,
+        Field(min_length=1, max_length=1_000, description="Path relative to the contract file."),
+    ]
+    media_type: (
+        Annotated[str, Field(min_length=1, max_length=200, description="A2A media type.")] | None
+    ) = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_path(cls, value: object) -> object:
+        return {"path": value} if isinstance(value, str) else value
+
+    @field_validator("path")
+    @classmethod
+    def require_relative_path(cls, path: str) -> str:
+        if "\0" in path:
+            raise ValueError("file path contains a null byte")
+        if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+            raise ValueError("file path must be relative to the contract file")
+        return path
+
+
+class FileExpectation(StrictModel):
+    count: int = Field(default=1, ge=0, le=1_000, description="Required matching part count.")
+    source: Literal["message", "artifact"] | None = None
+    artifact_name: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    filename: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    media_type: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    kind: Literal["raw", "url"] | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> Self:
+        if self.source == "message" and self.artifact_name is not None:
+            raise ValueError("artifact_name cannot be used with source: message")
+        return self
+
+
+class StateSequenceExpectation(StrictModel):
+    equals: (
+        Annotated[list[StateName], Field(min_length=1, max_length=100)] | SkipJsonSchema[None]
+    ) = None
+    contains_in_order: (
+        Annotated[list[StateName], Field(min_length=1, max_length=100)] | SkipJsonSchema[None]
+    ) = None
+
+    @model_validator(mode="after")
+    def require_one_assertion(self) -> Self:
+        configured = self.model_fields_set & {"equals", "contains_in_order"}
+        if len(configured) != 1:
+            raise ValueError("states must define exactly one of equals or contains_in_order")
+        if getattr(self, configured.pop()) is None:
+            raise ValueError("state sequence assertion cannot be null")
+        return self
 
 
 class TextExpectation(StrictModel):
@@ -204,10 +309,19 @@ class Expectation(StrictModel):
         description="Required terminal A2A state.",
     )
     text: TextExpectation | None = Field(default=None, description="Response text checks.")
+    states: StateSequenceExpectation | None = Field(
+        default=None,
+        description="Observed A2A state sequence checks.",
+    )
     data: list[DataExpectation] = Field(
         default_factory=list,
         max_length=100,
         description="Structured response checks.",
+    )
+    files: list[FileExpectation] = Field(
+        default_factory=list,
+        max_length=100,
+        description="File-part metadata checks.",
     )
     max_seconds: float | None = Field(
         default=None,
@@ -231,6 +345,15 @@ class Expectation(StrictModel):
     def accept_single_data_expectation(cls, value: object) -> object:
         return [value] if isinstance(value, (dict, DataExpectation)) else value
 
+    @field_validator(
+        "files",
+        mode="before",
+        json_schema_input_type=FileExpectation | list[FileExpectation],
+    )
+    @classmethod
+    def accept_single_file_expectation(cls, value: object) -> object:
+        return [value] if isinstance(value, (dict, FileExpectation)) else value
+
 
 class Turn(StrictModel):
     message: NonEmptyText | None = Field(default=None, description="Text sent to the agent.")
@@ -238,6 +361,11 @@ class Turn(StrictModel):
         default_factory=list,
         max_length=100,
         description="Structured data parts sent to the agent.",
+    )
+    files: list[FileInput] = Field(
+        default_factory=list,
+        max_length=MAX_INPUT_FILES,
+        description="Local files sent as inline A2A raw parts.",
     )
     expect: Expectation = Field(default_factory=Expectation, description="Expected response.")
 
@@ -258,8 +386,8 @@ class Turn(StrictModel):
 
     @model_validator(mode="after")
     def require_content(self) -> Self:
-        if self.message is None and not self.data:
-            raise ValueError("turn must contain message or data")
+        if self.message is None and not self.data and not self.files:
+            raise ValueError("turn must contain message, data, or files")
         return self
 
 
@@ -273,6 +401,11 @@ class Scenario(StrictModel):
         default_factory=list,
         max_length=100,
         description="Single-turn structured input.",
+    )
+    files: list[FileInput] = Field(
+        default_factory=list,
+        max_length=MAX_INPUT_FILES,
+        description="Single-turn local file input.",
     )
     turns: (
         Annotated[
@@ -307,10 +440,10 @@ class Scenario(StrictModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> Self:
-        if self.turns is not None and (self.message is not None or self.data):
+        if self.turns is not None and (self.message is not None or self.data or self.files):
             raise ValueError("set exactly one of single-turn input or turns")
-        if self.turns is None and self.message is None and not self.data:
-            raise ValueError("scenario must contain message, data, or turns")
+        if self.turns is None and self.message is None and not self.data and not self.files:
+            raise ValueError("scenario must contain message, data, files, or turns")
         if self.turns is not None and "expect" in self.model_fields_set:
             raise ValueError("put expect on each turn when using turns")
         return self
@@ -318,7 +451,17 @@ class Scenario(StrictModel):
     def resolved_turns(self) -> list[Turn]:
         if self.turns is not None:
             return self.turns
-        return [Turn(message=self.message, data=self.data, expect=self.expect)]
+        return [Turn(message=self.message, data=self.data, files=self.files, expect=self.expect)]
+
+
+class ScenarioDefaults(StrictModel):
+    trials: int = Field(default=1, ge=1, le=100, description="Default independent repetitions.")
+    pass_rate: float = Field(
+        default=1.0,
+        gt=0,
+        le=1,
+        description="Default minimum successful trial fraction.",
+    )
 
 
 class AgentConfig(StrictModel):
@@ -390,10 +533,19 @@ class AgentConfig(StrictModel):
 class ProofConfig(StrictModel):
     version: Literal[1] = Field(description="Configuration format version.")
     agent: AgentConfig = Field(description="Agent discovery and transport settings.")
+    card: AgentCardExpectation | None = Field(
+        default=None,
+        description="Agent Card preflight checks.",
+    )
+    defaults: ScenarioDefaults = Field(
+        default_factory=ScenarioDefaults,
+        description="Defaults applied to scenarios that omit these fields.",
+    )
     scenarios: Annotated[
         list[Scenario],
         Field(min_length=1, max_length=1_000, description="Behavior contracts to run."),
     ]
+    _contract_dir: Path = PrivateAttr(default_factory=lambda: Path.cwd().resolve())
 
     @field_validator("scenarios")
     @classmethod
@@ -409,6 +561,24 @@ class ProofConfig(StrictModel):
             raise ValueError(f"scenario names must be unique: {names}")
         return scenarios
 
+    @property
+    def contract_dir(self) -> Path:
+        return self._contract_dir
+
+    def bind_contract_dir(self, path: Path) -> None:
+        self._contract_dir = path.resolve()
+
+    def resolved_scenarios(self) -> list[Scenario]:
+        resolved: list[Scenario] = []
+        for scenario in self.scenarios:
+            updates = {
+                name: getattr(self.defaults, name)
+                for name in ("trials", "pass_rate")
+                if name not in scenario.model_fields_set
+            }
+            resolved.append(scenario.model_copy(update=updates) if updates else scenario)
+        return resolved
+
 
 class DataPartResult(StrictModel):
     source: Literal["message", "artifact"]
@@ -418,14 +588,31 @@ class DataPartResult(StrictModel):
     artifact_name: str | None = None
 
 
+class FilePartResult(StrictModel):
+    source: Literal["message", "artifact"]
+    kind: Literal["raw", "url"]
+    filename: Annotated[str, Field(max_length=1_000)] | None = None
+    media_type: Annotated[str, Field(max_length=200)] | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+    artifact_id: Annotated[str, Field(max_length=1_000)] | None = None
+    artifact_name: Annotated[str, Field(max_length=200)] | None = None
+
+
+class CardResult(StrictModel):
+    passed: bool
+    failures: list[str] = Field(default_factory=list)
+
+
 class TurnResult(StrictModel):
     index: int
     passed: bool
     state: str
+    states: list[str] = Field(default_factory=list)
     duration_ms: int
     first_event_ms: int | None = None
     text: str
     data: list[DataPartResult] = Field(default_factory=list)
+    files: list[FilePartResult] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
 
 
@@ -448,6 +635,7 @@ class ScenarioResult(StrictModel):
 class SuiteResult(StrictModel):
     passed: bool
     duration_ms: int
+    card: CardResult | None = None
     scenarios: list[ScenarioResult]
 
 

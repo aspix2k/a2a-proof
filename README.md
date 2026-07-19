@@ -51,6 +51,18 @@ agent:
   headers:
     Authorization: ${A2A_AUTHORIZATION}
 
+card:
+  skills:
+    contains: [summarize]
+  capabilities:
+    streaming: true
+  input_modes:
+    contains: application/pdf
+
+defaults:
+  trials: 3
+  pass_rate: 0.66
+
 scenarios:
   - name: capital of France
     message: What is the capital of France?
@@ -108,11 +120,31 @@ scenarios:
             properties:
               date: {type: string}
               conditions: {type: string}
+
+  - name: summarize a document
+    message: Summarize this file
+    files:
+      - path: fixtures/report.pdf
+        media_type: application/pdf
+    expect:
+      state: completed
+      states:
+        contains_in_order: [working, completed]
+      files:
+        source: artifact
+        artifact_name: summary
+        media_type: text/plain
+        count: 1
 ```
 
-Each scenario uses a single turn or `turns`. A turn may contain `message`, `data`, or both. A mapping
-under `data` creates one A2A data part; use a list to send several parts. Multi-turn scenarios
-preserve the A2A context and continue the task after `input_required` and `auth_required` responses.
+Each scenario uses a single turn or `turns`. A turn may contain `message`, `data`, `files`, or any
+combination of them. A mapping under `data` creates one A2A data part; use a list to send several
+parts. Multi-turn scenarios preserve the A2A context and continue the task after `input_required`
+and `auth_required` responses.
+
+`card` runs once, before scenario messages. Skill checks use stable skill IDs, while input and
+output mode comparisons are case-insensitive. A failed card check stops the run with exit code `1`.
+`defaults` supplies `trials` and `pass_rate` only when a scenario omits that field.
 
 Text assertions support `contains`, `not_contains`, `equals`, and Python regular expressions in
 `matches`. Strings are case-sensitive unless `case_sensitive: false` is set. Failed, rejected,
@@ -122,6 +154,10 @@ and canceled tasks fail by default unless that state is explicitly expected.
 A2A response event observed by the client, which is useful for streaming responsiveness checks.
 
 `trials` repeats a scenario. `pass_rate` is the minimum successful fraction and defaults to `1`.
+
+`states.equals` checks the complete observed state trajectory. `states.contains_in_order` checks a
+subsequence and allows intermediate states. Consecutive duplicate states are collapsed before
+evaluation.
 
 Structured assertions inspect A2A `data` parts from messages or artifacts. `path` is an
 [RFC 6901 JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901); an empty path checks the complete
@@ -136,6 +172,12 @@ name, and media type filters are applied. Use exactly one assertion type per ent
 
 Embedded schemas may use local references such as `#/$defs/item`; external references are rejected
 and never fetched.
+
+File paths are resolved relative to the contract file and sent as inline `raw` parts with a
+filename and media type. A file entry may be a path string or an object with `path` and an optional
+`media_type`. Response file checks match metadata from `raw` and `url` parts by source, artifact
+name, filename, media type, kind, and exact count. Remote file URLs are never fetched or copied into
+reports; reports retain only the part kind and non-URL metadata.
 
 ## Editor support
 
@@ -248,13 +290,14 @@ or configuration could not be executed. JUnit output is suitable for CI test rep
 
 ## Safety limits
 
-Per turn, outgoing structured input is limited to 100 parts and 1 MB. Responses are limited to
-1,000 stream events, 1,000 structured data parts, and 1 MB each of text, structured data, and inline
-raw data. At most 20 extension URIs and 8,000 extension-header characters may be configured.
-Embedded JSON Schemas are limited to 100 KB and 50 levels. Requests have a configurable timeout,
-text and data `matches` checks have a 100 ms evaluation limit, HTTP redirects are disabled,
-external schema references are rejected, and artifact URLs are never fetched. Treat the tested
-agent and all returned content as untrusted input.
+Per turn, outgoing structured input is limited to 100 parts and 1 MB. File input is limited to 20
+files, 10 MB per file, and 20 MB in total; paths cannot escape the contract directory, including
+through symlinks. Responses are limited to 1,000 stream events, 1,000 structured data parts, 1,000
+file parts, 1 MB each of text and structured data, and 20 MB of inline raw data. At most 20 extension
+URIs and 8,000 extension-header characters may be configured. Embedded JSON Schemas are limited to
+100 KB and 50 levels. Requests have a configurable timeout, text and data `matches` checks have a
+100 ms evaluation limit, HTTP redirects are disabled, external schema references are rejected, and
+file URLs are never fetched. Treat the tested agent and all returned content as untrusted input.
 
 ## Development
 

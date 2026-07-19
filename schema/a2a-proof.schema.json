@@ -1,5 +1,87 @@
 {
   "$defs": {
+    "AgentCapabilitiesExpectation": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "streaming"
+          ]
+        },
+        {
+          "required": [
+            "push_notifications"
+          ]
+        },
+        {
+          "required": [
+            "extended_agent_card"
+          ]
+        }
+      ],
+      "properties": {
+        "extended_agent_card": {
+          "title": "Extended Agent Card",
+          "type": "boolean"
+        },
+        "push_notifications": {
+          "title": "Push Notifications",
+          "type": "boolean"
+        },
+        "streaming": {
+          "title": "Streaming",
+          "type": "boolean"
+        }
+      },
+      "title": "AgentCapabilitiesExpectation",
+      "type": "object"
+    },
+    "AgentCardExpectation": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "skills"
+          ]
+        },
+        {
+          "required": [
+            "capabilities"
+          ]
+        },
+        {
+          "required": [
+            "input_modes"
+          ]
+        },
+        {
+          "required": [
+            "output_modes"
+          ]
+        }
+      ],
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/AgentCapabilitiesExpectation",
+          "title": "Capabilities"
+        },
+        "input_modes": {
+          "$ref": "#/$defs/ContainsExpectation",
+          "title": "Input Modes"
+        },
+        "output_modes": {
+          "$ref": "#/$defs/ContainsExpectation",
+          "title": "Output Modes"
+        },
+        "skills": {
+          "$ref": "#/$defs/ContainsExpectation",
+          "description": "Required Agent Card skill IDs.",
+          "title": "Skills"
+        }
+      },
+      "title": "AgentCardExpectation",
+      "type": "object"
+    },
     "AgentConfig": {
       "additionalProperties": false,
       "properties": {
@@ -82,6 +164,37 @@
         "url"
       ],
       "title": "AgentConfig",
+      "type": "object"
+    },
+    "ContainsExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "contains": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 100,
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "description": "Required values.",
+          "title": "Contains"
+        }
+      },
+      "required": [
+        "contains"
+      ],
+      "title": "ContainsExpectation",
       "type": "object"
     },
     "DataExpectation": {
@@ -290,11 +403,28 @@
               "items": {
                 "$ref": "#/$defs/DataExpectation"
               },
+              "maxItems": 100,
               "type": "array"
             }
           ],
           "description": "Structured response checks.",
           "title": "Data"
+        },
+        "files": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileExpectation"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/FileExpectation"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "File-part metadata checks.",
+          "title": "Files"
         },
         "max_first_event_seconds": {
           "anyOf": [
@@ -341,6 +471,18 @@
           "description": "Required terminal A2A state.",
           "title": "State"
         },
+        "states": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateSequenceExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Observed A2A state sequence checks."
+        },
         "text": {
           "anyOf": [
             {
@@ -356,6 +498,138 @@
       },
       "title": "Expectation",
       "type": "object"
+    },
+    "FileExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Name"
+        },
+        "count": {
+          "default": 1,
+          "description": "Required matching part count.",
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "filename": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filename"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "raw",
+                "url"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "artifact"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "title": "FileExpectation",
+      "type": "object"
+    },
+    "FileInput": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "media_type": {
+              "anyOf": [
+                {
+                  "description": "A2A media type.",
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Media Type"
+            },
+            "path": {
+              "description": "Path relative to the contract file.",
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "FileInput",
+          "type": "object"
+        }
+      ],
+      "description": "A relative path or file input object.",
+      "title": "FileInput"
     },
     "JsonValue": {},
     "Scenario": {
@@ -382,6 +656,15 @@
         "expect": {
           "$ref": "#/$defs/Expectation",
           "description": "Single-turn response."
+        },
+        "files": {
+          "description": "Single-turn local file input.",
+          "items": {
+            "$ref": "#/$defs/FileInput"
+          },
+          "maxItems": 20,
+          "title": "Files",
+          "type": "array"
         },
         "message": {
           "anyOf": [
@@ -444,6 +727,70 @@
         "name"
       ],
       "title": "Scenario",
+      "type": "object"
+    },
+    "ScenarioDefaults": {
+      "additionalProperties": false,
+      "properties": {
+        "pass_rate": {
+          "default": 1.0,
+          "description": "Default minimum successful trial fraction.",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Pass Rate",
+          "type": "number"
+        },
+        "trials": {
+          "default": 1,
+          "description": "Default independent repetitions.",
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Trials",
+          "type": "integer"
+        }
+      },
+      "title": "ScenarioDefaults",
+      "type": "object"
+    },
+    "StateSequenceExpectation": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "equals"
+          ]
+        },
+        {
+          "required": [
+            "contains_in_order"
+          ]
+        }
+      ],
+      "properties": {
+        "contains_in_order": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Contains In Order",
+          "type": "array"
+        },
+        "equals": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Equals",
+          "type": "array"
+        }
+      },
+      "title": "StateSequenceExpectation",
       "type": "object"
     },
     "TextExpectation": {
@@ -542,6 +889,15 @@
           "$ref": "#/$defs/Expectation",
           "description": "Expected response."
         },
+        "files": {
+          "description": "Local files sent as inline A2A raw parts.",
+          "items": {
+            "$ref": "#/$defs/FileInput"
+          },
+          "maxItems": 20,
+          "title": "Files",
+          "type": "array"
+        },
         "message": {
           "anyOf": [
             {
@@ -570,6 +926,22 @@
     "agent": {
       "$ref": "#/$defs/AgentConfig",
       "description": "Agent discovery and transport settings."
+    },
+    "card": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentCardExpectation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Agent Card preflight checks."
+    },
+    "defaults": {
+      "$ref": "#/$defs/ScenarioDefaults",
+      "description": "Defaults applied to scenarios that omit these fields."
     },
     "scenarios": {
       "description": "Behavior contracts to run.",

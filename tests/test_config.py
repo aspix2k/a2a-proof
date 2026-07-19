@@ -36,6 +36,8 @@ class _BoundedStream(BytesIO):
 
 
 class _BoundedPath:
+    parent = Path(".")
+
     def open(self, mode: str) -> _BoundedStream:
         assert mode == "rb"
         return _BoundedStream(
@@ -195,14 +197,116 @@ def test_resolves_single_turn_structured_input() -> None:
     assert scenario.resolved_turns()[0].model_dump() == {
         "message": "Create order",
         "data": [{"order_id": "order-42"}],
+        "files": [],
         "expect": {
             "state": None,
             "text": None,
+            "states": None,
             "data": [],
+            "files": [],
             "max_seconds": None,
             "max_first_event_seconds": None,
         },
     }
+
+
+def test_loads_and_validates_relative_file_inputs(tmp_path: Path) -> None:
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "report.pdf").write_bytes(b"pdf")
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: summarize
+    message: Summarize this
+    files:
+      - fixtures/report.pdf
+      - path: fixtures/report.pdf
+        media_type: application/x-test
+""",
+    )
+
+    config = load_config(path)
+
+    assert config.contract_dir == tmp_path.resolve()
+    assert [file.path for file in config.scenarios[0].files] == [
+        "fixtures/report.pdf",
+        "fixtures/report.pdf",
+    ]
+    assert config.scenarios[0].files[1].media_type == "application/x-test"
+
+
+def test_file_input_paths_must_be_portably_relative() -> None:
+    assert models_module.FileInput.model_validate({"path": "fixtures/report.pdf"}).path == (
+        "fixtures/report.pdf"
+    )
+    with pytest.raises(ValueError, match="relative to the contract file"):
+        models_module.FileInput(path="/tmp/report.pdf")
+    with pytest.raises(ValueError, match="relative to the contract file"):
+        models_module.FileInput(path=r"C:\\report.pdf")
+    with pytest.raises(ValueError, match="null byte"):
+        models_module.FileInput(path="bad\0name")
+
+
+def test_load_reports_invalid_file_references(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios: [{name: summarize, files: [missing.pdf]}]
+""",
+    )
+
+    with pytest.raises(ConfigError, match=r"cannot access input file 'missing\.pdf'"):
+        load_config(path)
+
+
+def test_applies_scenario_defaults_only_when_omitted() -> None:
+    config = models_module.ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "defaults": {"trials": 3, "pass_rate": 0.5},
+            "scenarios": [
+                {"name": "defaults", "message": "Hello"},
+                {
+                    "name": "override",
+                    "message": "Hello",
+                    "trials": 1,
+                    "pass_rate": 1,
+                },
+            ],
+        }
+    )
+
+    first, second = config.resolved_scenarios()
+    assert (first.trials, first.pass_rate) == (3, 0.5)
+    assert (second.trials, second.pass_rate) == (1, 1)
+    assert config.scenarios[0].trials == 1
+
+
+def test_validates_card_and_state_sequence_assertions() -> None:
+    with pytest.raises(ValueError, match="card must define at least one assertion"):
+        models_module.AgentCardExpectation()
+    with pytest.raises(ValueError, match="capabilities must define at least one assertion"):
+        models_module.AgentCapabilitiesExpectation()
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.AgentCapabilitiesExpectation(streaming=None)
+    with pytest.raises(ValueError, match="exactly one"):
+        models_module.StateSequenceExpectation()
+    with pytest.raises(ValueError, match="exactly one"):
+        models_module.StateSequenceExpectation(equals=["working"], contains_in_order=["working"])
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.StateSequenceExpectation(equals=None)
+
+
+def test_rejects_artifact_name_for_message_file_expectation() -> None:
+    with pytest.raises(ValueError, match="artifact_name cannot be used"):
+        models_module.FileExpectation(source="message", artifact_name="report")
 
 
 def test_checks_structured_input_size_after_environment_expansion(
@@ -440,7 +544,7 @@ version: 1
 agent: {url: https://example.com}
 scenarios: [{name: empty}]
 """,
-            "scenario must contain message, data, or turns",
+            "scenario must contain message, data, files, or turns",
         ),
         (
             """
@@ -450,7 +554,7 @@ scenarios:
   - name: empty turn
     turns: [{expect: {state: completed}}]
 """,
-            "turn must contain message or data",
+            "turn must contain message, data, or files",
         ),
         (
             """

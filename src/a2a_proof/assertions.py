@@ -3,11 +3,21 @@ from __future__ import annotations
 import json
 
 import regex
+from a2a.types import AgentCard
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
 from pydantic import JsonValue
 
-from a2a_proof.models import DataExpectation, DataPartResult, Expectation, TextExpectation
+from a2a_proof.models import (
+    AgentCardExpectation,
+    DataExpectation,
+    DataPartResult,
+    Expectation,
+    FileExpectation,
+    FilePartResult,
+    StateSequenceExpectation,
+    TextExpectation,
+)
 from a2a_proof.protocol import TurnOutcome
 
 FAILURE_STATES = {"canceled", "failed", "rejected"}
@@ -49,8 +59,67 @@ def evaluate(expectation: Expectation, outcome: TurnOutcome) -> list[str]:
             )
     if expectation.text is not None:
         failures.extend(_evaluate_text(expectation.text, outcome.text))
+    if expectation.states is not None:
+        failures.extend(_evaluate_states(expectation.states, outcome.states))
     failures.extend(_evaluate_data(expectation.data, outcome.data))
+    failures.extend(_evaluate_files(expectation.files, outcome.files))
     return failures
+
+
+def evaluate_card(expectation: AgentCardExpectation, card: AgentCard) -> list[str]:
+    failures: list[str] = []
+    if expectation.skills is not None:
+        failures.extend(
+            _missing_values(
+                "skill ID", expectation.skills.contains, [skill.id for skill in card.skills]
+            )
+        )
+    if expectation.input_modes is not None:
+        failures.extend(
+            _missing_values(
+                "input mode",
+                expectation.input_modes.contains,
+                list(card.default_input_modes),
+                case_sensitive=False,
+            )
+        )
+    if expectation.output_modes is not None:
+        failures.extend(
+            _missing_values(
+                "output mode",
+                expectation.output_modes.contains,
+                list(card.default_output_modes),
+                case_sensitive=False,
+            )
+        )
+    if expectation.capabilities is not None:
+        for name in ("streaming", "push_notifications", "extended_agent_card"):
+            if name not in expectation.capabilities.model_fields_set:
+                continue
+            expected = getattr(expectation.capabilities, name)
+            actual = bool(getattr(card.capabilities, name))
+            if actual != expected:
+                label = name.replace("_", " ")
+                failures.append(
+                    f"expected Agent Card capability {label!r} to be {expected}, got {actual}"
+                )
+    return failures
+
+
+def _missing_values(
+    label: str,
+    expected: list[str],
+    actual: list[str],
+    *,
+    case_sensitive: bool = True,
+) -> list[str]:
+    available = set(actual if case_sensitive else (value.casefold() for value in actual))
+    missing = [
+        value
+        for value in expected
+        if (value if case_sensitive else value.casefold()) not in available
+    ]
+    return [f"Agent Card does not contain {label} {value!r}" for value in missing]
 
 
 def _evaluate_text(expectation: TextExpectation, actual: str) -> list[str]:
@@ -85,6 +154,69 @@ def _evaluate_text(expectation: TextExpectation, actual: str) -> list[str]:
 
 def _normalize_state(state: str) -> str:
     return state.strip().casefold().replace("-", "_").replace(" ", "_")
+
+
+def _evaluate_states(
+    expectation: StateSequenceExpectation,
+    states: tuple[str, ...],
+) -> list[str]:
+    actual = [_normalize_state(state) for state in states]
+    if expectation.equals is not None:
+        expected = [_normalize_state(state) for state in expectation.equals]
+        if actual != expected:
+            return [f"expected state sequence {expected!r}, got {actual!r}"]
+        return []
+    expected = [_normalize_state(state) for state in expectation.contains_in_order or []]
+    pending = iter(actual)
+    if all(any(state == item for state in pending) for item in expected):
+        return []
+    return [f"expected state sequence to contain {expected!r} in order, got {actual!r}"]
+
+
+def _evaluate_files(
+    expectations: list[FileExpectation],
+    parts: tuple[FilePartResult, ...],
+) -> list[str]:
+    failures: list[str] = []
+    for expectation in expectations:
+        matched = [part for part in parts if _matches_file(expectation, part)]
+        if len(matched) != expectation.count:
+            failures.append(
+                f"expected {expectation.count} file part(s) matching "
+                f"{_file_location(expectation)}, got {len(matched)}"
+            )
+    return failures
+
+
+def _matches_file(expectation: FileExpectation, part: FilePartResult) -> bool:
+    return (
+        (expectation.source is None or part.source == expectation.source)
+        and (expectation.artifact_name is None or part.artifact_name == expectation.artifact_name)
+        and (expectation.filename is None or part.filename == expectation.filename)
+        and (expectation.kind is None or part.kind == expectation.kind)
+        and (
+            expectation.media_type is None
+            or (
+                part.media_type is not None
+                and part.media_type.casefold() == expectation.media_type.casefold()
+            )
+        )
+    )
+
+
+def _file_location(expectation: FileExpectation) -> str:
+    filters = [
+        f"{name.replace('_', ' ')} {value!r}"
+        for name, value in (
+            ("source", expectation.source),
+            ("artifact_name", expectation.artifact_name),
+            ("filename", expectation.filename),
+            ("media_type", expectation.media_type),
+            ("kind", expectation.kind),
+        )
+        if value is not None
+    ]
+    return ", ".join(filters) or "all file parts"
 
 
 def _evaluate_data(

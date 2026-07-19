@@ -46,6 +46,7 @@ from a2a_proof.a2a import (
     _validate_card_interfaces,
     discover_agent,
 )
+from a2a_proof.files import PreparedFile
 from a2a_proof.models import AgentConfig
 from a2a_proof.protocol import ProtocolError, ResponseCollector
 
@@ -114,6 +115,7 @@ def test_collects_direct_message() -> None:
     assert outcome.context_id == "context"
     assert outcome.task_id is None
     assert outcome.duration_ms == 12
+    assert outcome.states == ("message",)
 
 
 def test_preserves_initial_ids_when_message_omits_them() -> None:
@@ -191,6 +193,7 @@ def test_collects_task_history_status_and_artifact_chunks() -> None:
     assert outcome.task_id == "task"
     assert outcome.context_id == "context"
     assert outcome.text == "Working\nDone\nHello"
+    assert outcome.states == ("working", "completed")
 
 
 def test_task_snapshot_collects_artifacts() -> None:
@@ -271,6 +274,7 @@ def test_collects_ids_from_status_and_artifact_updates() -> None:
     artifact = artifact_collector.finish(duration_ms=1)
     assert artifact.task_id == "artifact-task"
     assert artifact.context_id == "artifact-context"
+    assert artifact.states == ("message",)
 
 
 def test_replaces_messages_by_id_and_joins_text_parts() -> None:
@@ -364,6 +368,126 @@ def test_collects_structured_message_and_artifact_data() -> None:
             "artifact_name": "forecast",
         },
     ]
+
+
+def test_collects_file_metadata_without_fetching_urls() -> None:
+    collector = ResponseCollector("context")
+    collector.add(
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[
+                    Part(text="attachment"),
+                    Part(raw=b"hello", filename="answer.txt", media_type="text/plain"),
+                    Part(url="https://files.example/report.pdf?token=secret"),
+                ],
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=Artifact(
+                    artifact_id="report",
+                    name="generated report",
+                    parts=[
+                        Part(
+                            url="https://files.example/report.pdf",
+                            filename="report.pdf",
+                            media_type="application/pdf",
+                        )
+                    ],
+                )
+            )
+        )
+    )
+
+    outcome = collector.finish(duration_ms=1)
+
+    assert [part.model_dump() for part in outcome.files] == [
+        {
+            "source": "message",
+            "kind": "raw",
+            "filename": "answer.txt",
+            "media_type": "text/plain",
+            "size_bytes": 5,
+            "artifact_id": None,
+            "artifact_name": None,
+        },
+        {
+            "source": "message",
+            "kind": "url",
+            "filename": None,
+            "media_type": None,
+            "size_bytes": None,
+            "artifact_id": None,
+            "artifact_name": None,
+        },
+        {
+            "source": "artifact",
+            "kind": "url",
+            "filename": "report.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": None,
+            "artifact_id": "report",
+            "artifact_name": "generated report",
+        },
+    ]
+    assert "secret" not in repr(outcome.files)
+
+
+def test_appends_file_parts_and_collapses_duplicate_states() -> None:
+    collector = ResponseCollector("context")
+    collector.add(
+        StreamResponse(
+            task=Task(
+                id="task",
+                status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            status_update=TaskStatusUpdateEvent(
+                task_id="task",
+                status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=Artifact(
+                    artifact_id="answer",
+                    parts=[Part(raw=b"a", filename="one.bin")],
+                )
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                artifact=Artifact(
+                    artifact_id="answer",
+                    parts=[Part(raw=b"b", filename="two.bin")],
+                ),
+                append=True,
+            )
+        )
+    )
+    collector.add(
+        StreamResponse(
+            status_update=TaskStatusUpdateEvent(
+                task_id="task",
+                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+            )
+        )
+    )
+
+    outcome = collector.finish(duration_ms=1)
+
+    assert outcome.states == ("working", "completed")
+    assert [part.filename for part in outcome.files] == ["one.bin", "two.bin"]
 
 
 def test_appends_and_replaces_structured_artifact_parts() -> None:
@@ -579,6 +703,59 @@ def test_enforces_raw_data_limit(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+def test_enforces_file_count_url_and_metadata_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(protocol_module, "MAX_FILE_PARTS", 1)
+    collector = ResponseCollector("context")
+    with pytest.raises(ProtocolError, match="exceeded 1 file parts"):
+        collector.add(
+            StreamResponse(
+                message=Message(
+                    role=Role.ROLE_AGENT,
+                    parts=[Part(raw=b"a"), Part(url="https://example.com/b")],
+                )
+            )
+        )
+
+    monkeypatch.setattr(protocol_module, "MAX_FILE_PARTS", 2)
+    boundary = ResponseCollector("context")
+    boundary.add(
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[Part(raw=b"a"), Part(url="https://example.com/b")],
+            )
+        )
+    )
+    assert len(boundary.finish(duration_ms=1).files) == 2
+
+    url = "https://example.com"
+    monkeypatch.setattr(protocol_module, "MAX_FILE_URL_CHARS", len(url))
+    boundary = ResponseCollector("context")
+    boundary.add(StreamResponse(message=Message(role=Role.ROLE_AGENT, parts=[Part(url=url)])))
+    assert len(boundary.finish(duration_ms=1).files) == 1
+
+    monkeypatch.setattr(protocol_module, "MAX_FILE_URL_CHARS", 5)
+    collector = ResponseCollector("context")
+    with pytest.raises(ProtocolError, match="file URL exceeded 5 characters"):
+        collector.add(
+            StreamResponse(
+                message=Message(role=Role.ROLE_AGENT, parts=[Part(url="https://example.com")])
+            )
+        )
+
+    collector = ResponseCollector("context")
+    with pytest.raises(ProtocolError) as raised:
+        collector.add(
+            StreamResponse(
+                message=Message(
+                    role=Role.ROLE_AGENT,
+                    parts=[Part(raw=b"a", filename="x" * 1_001)],
+                )
+            )
+        )
+    assert str(raised.value) == "agent returned invalid file metadata"
+
+
 @pytest.mark.asyncio
 async def test_session_sends_context_and_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     timestamps = iter([10.0, 10.025, 10.1])
@@ -586,6 +763,7 @@ async def test_session_sends_context_and_closes_client(monkeypatch: pytest.Monke
     client = _FakeClient([StreamResponse(message=_agent_message("Hello"))])
     session = A2ASession(
         cast(Client, client),
+        AgentCard(name="Agent"),
         timeout=2,
         headers={"Authorization": "Bearer secret"},
     )
@@ -615,6 +793,7 @@ async def test_session_sends_structured_parts_and_normalizes_extensions() -> Non
     client = _FakeClient([StreamResponse(message=_agent_message("accepted"))])
     session = A2ASession(
         cast(Client, client),
+        AgentCard(name="Agent"),
         timeout=2,
         headers={
             "Authorization": "Bearer secret",
@@ -626,6 +805,13 @@ async def test_session_sends_structured_parts_and_normalizes_extensions() -> Non
     await session.send_turn(
         None,
         data=[{"order_id": "order-42"}, ["one", "two"]],
+        files=[
+            PreparedFile(
+                content=b"report",
+                filename="report.pdf",
+                media_type="application/pdf",
+            )
+        ],
         context_id="context",
         task_id=None,
     )
@@ -637,6 +823,11 @@ async def test_session_sends_structured_parts_and_normalizes_extensions() -> Non
         {"order_id": "order-42"},
         ["one", "two"],
     ]
+    assert client.request.message.parts[-1] == Part(
+        raw=b"report",
+        filename="report.pdf",
+        media_type="application/pdf",
+    )
     assert client.context.service_parameters == {
         "Authorization": "Bearer secret",
         "A2A-Extensions": ("https://example.com/extensions/one,https://example.com/extensions/two"),
@@ -653,7 +844,7 @@ async def test_session_records_only_the_first_event_time(monkeypatch: pytest.Mon
             StreamResponse(message=_agent_message("two", message_id="two")),
         ]
     )
-    session = A2ASession(cast(Client, client), timeout=2)
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=2)
 
     outcome = await session.send_turn("Hi", context_id="context", task_id=None)
 
@@ -664,7 +855,7 @@ async def test_session_records_only_the_first_event_time(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_session_reports_timeout() -> None:
     client = _FakeClient([], delay=0.05)
-    session = A2ASession(cast(Client, client), timeout=0.001)
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=0.001)
 
     with pytest.raises(ProtocolError, match="did not finish within"):
         await session.send_turn("Hi", context_id="context", task_id=None)
@@ -678,6 +869,7 @@ async def test_connect_builds_client_for_discovered_card() -> None:
     )
 
     session = await A2ASession.connect(AgentConfig(url="https://example.com"))
+    assert session.card.name == "Test agent"
     await session.close()
 
 
