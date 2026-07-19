@@ -16,9 +16,6 @@ jobs:
   quality:
     name: Quality
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # Required by Codecov OIDC authentication.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -32,11 +29,7 @@ jobs:
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ty check
       - run: uv run --frozen zizmor --persona=pedantic --offline --strict-collection .
-      - run: uv run --frozen pytest --cov=a2a_proof --cov-report=term-missing --cov-report=xml
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: coverage.xml
-          use_oidc: true
+      - run: uv run --frozen pytest --cov=a2a_proof --cov-report=term-missing
       - run: uv build
       - run: uv run --frozen twine check dist/*
       - run: uvx --from dist/*.whl a2a-proof --help
