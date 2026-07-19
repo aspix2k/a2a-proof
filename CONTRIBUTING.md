@@ -1,0 +1,33 @@
+# Contributing
+
+Bug reports and focused pull requests are welcome. For broad behavior changes, an issue can help
+settle the configuration contract before implementation.
+
+## Setup
+
+```console
+git clone https://github.com/aspix2k/a2a-proof.git
+cd a2a-proof
+uv sync --all-groups
+```
+
+Before opening a pull request, run:
+
+```console
+uv run ruff format --check .
+uv run ruff check .
+uv run ty check
+uv run zizmor --persona=pedantic --offline --strict-collection .
+uv run pytest --cov=a2a_proof
+uv build
+```
+
+Add tests for observable behavior. Keep changes small, avoid compatibility shims without a real
+use case, and do not include credentials or responses from private agents.
+
+The deterministic core also has mutation tests:
+
+```console
+uv run mutmut run --max-children 1
+uv run mutmut results
+```
