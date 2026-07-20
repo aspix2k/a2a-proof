@@ -53,7 +53,7 @@ activates them on every transport. `init` adds required extensions automatically
 `A2A-Extensions` header remains supported, but the dedicated field is preferred.
 
 Extension activation is transport-level. AP2 mandate semantics require the optional setup in
-[AP2 mandate contracts](ap2.md).
+[AP2 contracts](ap2.md).
 
 ## Evidence
 

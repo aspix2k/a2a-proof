@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -195,7 +196,7 @@ def test_schema_rejects_invalid_task_action_turns() -> None:
 def test_schema_rejects_invalid_ap2_expectation_shape() -> None:
     validator = Draft202012Validator(config_schema())
 
-    def configuration(expectation: dict[str, object]) -> dict[str, object]:
+    def configuration(expectation: Mapping[str, object]) -> dict[str, object]:
         return {
             "version": 1,
             "agent": {"url": "https://example.com"},
@@ -221,4 +222,24 @@ def test_schema_rejects_invalid_ap2_expectation_shape() -> None:
     assert not validator.is_valid(configuration({**base, "checkout_hash": "hash"}))
     assert not validator.is_valid(
         configuration({**base, "type": "checkout", "transaction_id": "tx"})
+    )
+
+    receipt = {
+        "kind": "receipt",
+        "type": "payment",
+        "binds_to": "payment",
+        "trusted_issuer_jwk": "fixtures/issuer.jwk",
+        "path": "/payment_receipt",
+    }
+    assert validator.is_valid(configuration(receipt))
+    assert not validator.is_valid(configuration({**receipt, "path": "/bad~2escape"}))
+    assert not validator.is_valid(
+        configuration({**receipt, "source": "message", "artifact_name": "receipt"})
+    )
+    assert not validator.is_valid(configuration({**receipt, "order_id": "order-1"}))
+    assert not validator.is_valid(
+        configuration({**receipt, "type": "checkout", "payment_id": "pay-1"})
+    )
+    assert not validator.is_valid(
+        configuration({**receipt, "status": "Success", "error": "declined"})
     )

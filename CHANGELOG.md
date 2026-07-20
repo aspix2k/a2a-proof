@@ -7,6 +7,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.10.0 - 2026-07-20
+
+### Security
+
+- Added signed AP2 payment and checkout receipt verification with an exact ES256 protected-header
+  requirement, official AP2 success/error payload validation, and explicit local public P-256
+  issuer keys. Remote key discovery, private JWK material, and token-supplied trust remain rejected.
+- Bound every response receipt to a mandate assertion that passed full chain verification in the
+  same turn. The receipt reference is recomputed from that exact closed-mandate JWT instead of
+  trusting a caller-provided response field.
+- Redacted selected receipt JWTs before reports and evidence are produced. Offline inspection reads
+  bounded files or standard input, never accepts token values as arguments, and does not expose
+  mismatched signed fields in diagnostics.
+
+### Features
+
+- Added `kind: receipt` AP2 contract assertions for payment and checkout receipts. Contracts can
+  check issuer, success or error status, payment or order identifiers, and error codes while using
+  `binds_to` to reference a named mandate assertion.
+- Added `a2a-proof ap2 inspect-receipt` with concise terminal and stable JSON output. It can derive
+  the expected reference from a mandate file or accept an already known reference hash.
+- Extended the generated JSON Schema with receipt assertions, binding identifiers, path and
+  response-part filters, and type-specific validation.
+
+### Bug fixes
+
+- Made official receipt tampering tests flip a decoded signature bit instead of a trailing
+  base64url character whose unused padding bits could leave the signature unchanged.
+
+### Documentation
+
+- Expanded the focused AP2 guide with a complete mandate-to-receipt contract, trust boundary, CLI
+  walkthrough, exact output, exit semantics, and copyable success-path example.
+- Updated the README feature summary and documentation links without expanding the onboarding
+  path.
+
+### Maintenance
+
+- Added synthetic payment-receipt fixtures signed by discarded demo keys and official AP2 v0.2.0
+  integration tests for payment and checkout receipts, success and error payloads, signature
+  tampering, and mandate-reference binding.
+- Extended unit, schema, CLI, reporting, configuration, redaction, and negative-path coverage while
+  retaining complete statement and branch coverage.
+- Established a clean mutation baseline after removing the generated `mutants/` tree: 3,617 of
+  3,697 mutants are killed (97.84%), with no uncovered, suspicious, skipped, timed-out, or crashed
+  mutations. Surviving receipt mutants were triaged for observable contract and security impact.
+
 ## 0.9.0 - 2026-07-20
 
 ### Security
@@ -40,8 +87,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   the documented command against the pinned official AP2 v0.2.0 SDK.
 - Extended official integration coverage to inspect real payment and checkout chains and reject a
   tampered signature through the same verifier used by response contracts.
-- Strengthened AP2 and cross-module contract tests; a clean full mutation run now kills 3,108 of
-  3,138 mutants (99.04%) with no uncovered, suspicious, timed-out, or crashed mutations.
+- Strengthened AP2 and cross-module contract tests. The mutation result originally recorded for
+  this release was incremental rather than a comparable full baseline; v0.10.0 establishes the
+  clean-run procedure.
 
 ## 0.8.0 - 2026-07-19
 

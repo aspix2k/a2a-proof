@@ -33,6 +33,10 @@ uv run mutmut run --max-children 1
 uv run mutmut results
 ```
 
+An existing `mutants/` directory makes local runs incremental. Use a clean checkout or move that
+ignored generated directory aside before recording a release score, then run
+`uv run mutmut export-cicd-stats` and inspect every non-zero result category.
+
 ## Releasing
 
 Update the version in `pyproject.toml`, refresh `uv.lock`, and move the changelog entries out of

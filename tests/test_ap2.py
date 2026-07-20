@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from base64 import urlsafe_b64encode
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,18 +20,31 @@ from a2a_proof.ap2 import (
     _read_public_jwk,
     _read_public_jwk_file,
     _replace_pointer,
+    _require_es256_header,
     _resolve_pointer,
+    _validate_receipt_inputs,
+    _verify_receipt,
+    _verify_receipt_token,
     _verify_signed_chain,
     _verify_typed_chain,
+    ap2_mandate_reference,
     ensure_ap2_sdk,
     evaluate_ap2,
     has_ap2_expectations,
     inspect_ap2,
+    inspect_ap2_receipt,
+    read_ap2_receipt_token,
     read_ap2_token,
     redact_ap2,
     validate_config_ap2,
 )
-from a2a_proof.models import AP2MandateExpectation, DataPartResult, ProofConfig
+from a2a_proof.models import (
+    AP2MandateExpectation,
+    AP2ReceiptExpectation,
+    DataPartResult,
+    Expectation,
+    ProofConfig,
+)
 
 
 def _write_jwk(path: Path) -> Path:
@@ -42,13 +56,14 @@ def _write_jwk(path: Path) -> Path:
 
 
 def _expectation(**updates: Any) -> AP2MandateExpectation:
-    return AP2MandateExpectation(
-        type="payment",
-        trusted_root_jwk="root.jwk",
-        audience="merchant",
-        nonce="nonce-1",
-        **updates,
-    )
+    values = {
+        "type": "payment",
+        "trusted_root_jwk": "root.jwk",
+        "audience": "merchant",
+        "nonce": "nonce-1",
+    }
+    values.update(updates)
+    return AP2MandateExpectation.model_validate(values)
 
 
 def _sdk(
@@ -62,7 +77,12 @@ def _sdk(
     checkout_jwt: str = "checkout.jwt.value",
     checkout_hash: str = "computed-hash",
     hash_error: Exception | None = None,
+    hash_result: Any = "computed-hash",
     jwk_error: Exception | None = None,
+    receipt_payload: Any = None,
+    receipt_error: Exception | None = None,
+    receipt_model_error: Exception | None = None,
+    closed_mandate_jwt: Any = "closed.jwt",
 ) -> _SDK:
     class JWK:
         @classmethod
@@ -82,6 +102,46 @@ def _sdk(
                 if payloads is None
                 else payloads
             )
+
+        def get_closed_mandate_jwt(self, token: str) -> str:
+            calls["closed_mandate"] = token
+            if isinstance(closed_mandate_jwt, Exception):
+                raise closed_mandate_jwt
+            return closed_mandate_jwt
+
+    class PaymentReceiptModel:
+        @classmethod
+        def model_validate(cls, value: Any, *, strict: bool) -> Any:
+            if receipt_model_error is not None:
+                raise receipt_model_error
+            calls["receipt_model"] = ("payment", value, strict)
+            return value
+
+    class CheckoutReceiptModel:
+        @classmethod
+        def model_validate(cls, value: Any, *, strict: bool) -> Any:
+            if receipt_model_error is not None:
+                raise receipt_model_error
+            calls["receipt_model"] = ("checkout", value, strict)
+            return value
+
+    def verify_jwt(token: str, key: Any) -> Any:
+        if receipt_error is not None:
+            raise receipt_error
+        calls["receipt_verify"] = (token, key)
+        return (
+            {
+                "status": "Success",
+                "iss": "processor.example",
+                "iat": 1_700_000_000,
+                "reference": "computed-hash",
+                "payment_id": "pay-1",
+                "psp_confirmation_id": "psp-1",
+                "network_confirmation_id": "network-1",
+            }
+            if receipt_payload is None
+            else receipt_payload
+        )
 
     class PaymentChain:
         closed_mandate = SimpleNamespace(
@@ -137,14 +197,17 @@ def _sdk(
         if hash_error is not None:
             raise hash_error
         calls.setdefault("hashed", value)
-        return "computed-hash"
+        return hash_result
 
     return _SDK(
         mandate_client=MandateClient,
         checkout_chain=CheckoutChain,
         payment_chain=PaymentChain,
+        checkout_receipt=CheckoutReceiptModel,
+        payment_receipt=PaymentReceiptModel,
         jwk=JWK,
         compute_sha256_b64url=compute_hash,
+        verify_jwt=verify_jwt,
     )
 
 
@@ -156,6 +219,23 @@ def _part(value: Any, **updates: Any) -> DataPartResult:
         value=value,
         **updates,
     )
+
+
+def _receipt_token(alg: str = "ES256") -> str:
+    header = urlsafe_b64encode(json.dumps({"alg": alg}).encode()).decode().rstrip("=")
+    return f"{header}.payload.signature"
+
+
+def _receipt_expectation(**updates: Any) -> AP2ReceiptExpectation:
+    values = {
+        "kind": "receipt",
+        "type": "payment",
+        "binds_to": "payment",
+        "trusted_issuer_jwk": "issuer.jwk",
+        "path": "/payment_receipt",
+    }
+    values.update(updates)
+    return AP2ReceiptExpectation.model_validate(values)
 
 
 def test_reads_bounded_ascii_token() -> None:
@@ -755,7 +835,7 @@ def test_detects_and_validates_configured_ap2_keys(
     monkeypatch.setattr(
         ap2_module,
         "_read_public_jwk",
-        lambda path, root: calls.append((path, root)) or {},
+        lambda path, root, _field="trusted_root_jwk": calls.append((path, root)) or {},
     )
     loads = 0
     sdk_calls: dict[str, Any] = {}
@@ -809,7 +889,12 @@ def test_runtime_preflight_rejects_invalid_public_key(
     monkeypatch.setattr(
         ap2_module,
         "_read_public_jwk",
-        lambda _path, _root: {"kty": "EC", "crv": "P-256", "x": "eA", "y": "eQ"},
+        lambda _path, _root, _field="trusted_root_jwk": {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "eA",
+            "y": "eQ",
+        },
     )
     monkeypatch.setattr(
         ap2_module,
@@ -829,6 +914,9 @@ def test_loads_official_sdk_and_disables_its_file_log(
         "ap2.sdk.mandate": mandate,
         "ap2.sdk.checkout_mandate_chain": SimpleNamespace(CheckoutMandateChain=object),
         "ap2.sdk.payment_mandate_chain": SimpleNamespace(PaymentMandateChain=object),
+        "ap2.sdk.generated.checkout_receipt": SimpleNamespace(CheckoutReceipt=object),
+        "ap2.sdk.generated.payment_receipt": SimpleNamespace(PaymentReceipt=object),
+        "ap2.sdk.jwt_helper": SimpleNamespace(verify_jwt=object()),
         "ap2.sdk.utils": SimpleNamespace(compute_sha256_b64url=object()),
         "jwcrypto.jwk": SimpleNamespace(JWK=object),
     }
@@ -1233,8 +1321,9 @@ def test_redaction_continues_after_an_unmatched_expectation() -> None:
 
 
 def test_empty_candidate_verification_has_a_stable_failure(tmp_path: Path) -> None:
-    failure = ap2_module._verify_any(_expectation(), [], tmp_path, _sdk({}))
+    reference, failure = ap2_module._verify_any(_expectation(), [], tmp_path, _sdk({}))
 
+    assert reference is None
     assert failure == "AP2 payment mandate verification failed: no mandate value was available"
 
 
@@ -1358,7 +1447,17 @@ def test_checkout_summary_supports_plain_string_status() -> None:
 
 def test_loads_every_official_sdk_component(monkeypatch: pytest.MonkeyPatch) -> None:
     components: dict[str, Any] = {
-        name: object() for name in ("mandate", "checkout", "payment", "jwk", "hash")
+        name: object()
+        for name in (
+            "mandate",
+            "checkout",
+            "payment",
+            "checkout_receipt",
+            "payment_receipt",
+            "verify_jwt",
+            "jwk",
+            "hash",
+        )
     }
     mandate = SimpleNamespace(MandateClient=components["mandate"], LOG_FILE_PATH="original")
     modules = {
@@ -1367,6 +1466,13 @@ def test_loads_every_official_sdk_component(monkeypatch: pytest.MonkeyPatch) -> 
             CheckoutMandateChain=components["checkout"]
         ),
         "ap2.sdk.payment_mandate_chain": SimpleNamespace(PaymentMandateChain=components["payment"]),
+        "ap2.sdk.generated.checkout_receipt": SimpleNamespace(
+            CheckoutReceipt=components["checkout_receipt"]
+        ),
+        "ap2.sdk.generated.payment_receipt": SimpleNamespace(
+            PaymentReceipt=components["payment_receipt"]
+        ),
+        "ap2.sdk.jwt_helper": SimpleNamespace(verify_jwt=components["verify_jwt"]),
         "ap2.sdk.utils": SimpleNamespace(compute_sha256_b64url=components["hash"]),
         "jwcrypto.jwk": SimpleNamespace(JWK=components["jwk"]),
     }
@@ -1378,8 +1484,11 @@ def test_loads_every_official_sdk_component(monkeypatch: pytest.MonkeyPatch) -> 
         mandate_client=components["mandate"],
         checkout_chain=components["checkout"],
         payment_chain=components["payment"],
+        checkout_receipt=components["checkout_receipt"],
+        payment_receipt=components["payment_receipt"],
         jwk=components["jwk"],
         compute_sha256_b64url=components["hash"],
+        verify_jwt=components["verify_jwt"],
     )
 
 
@@ -1413,8 +1522,11 @@ def test_serializes_public_jwk_compactly() -> None:
         mandate_client=base.mandate_client,
         checkout_chain=base.checkout_chain,
         payment_chain=base.payment_chain,
+        checkout_receipt=base.checkout_receipt,
+        payment_receipt=base.payment_receipt,
         jwk=JWK,
         compute_sha256_b64url=base.compute_sha256_b64url,
+        verify_jwt=base.verify_jwt,
     )
 
     ap2_module._parse_public_jwk({"kty": "EC", "x": "x"}, "root", sdk)
@@ -1515,3 +1627,678 @@ def test_error_at_exact_limit_is_not_truncated(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(ap2_module, "MAX_AP2_ERROR_CHARS", 4)
 
     assert _bounded_error(ValueError("1234")) == "1234"
+
+
+def test_receipt_expectation_requires_a_matching_unique_mandate_id() -> None:
+    mandate = _expectation(id="payment")
+    receipt = _receipt_expectation()
+
+    assert Expectation(ap2=[mandate, receipt]).ap2 == [mandate, receipt]
+
+    with pytest.raises(ValueError, match="must name a mandate"):
+        Expectation(ap2=[receipt])
+    with pytest.raises(ValueError, match="must be unique"):
+        Expectation(ap2=[mandate, mandate])
+    with pytest.raises(ValueError, match="cannot bind to checkout"):
+        Expectation(
+            ap2=[
+                _expectation(id="payment", type="checkout", checkout_hash="hash"),
+                receipt,
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"source": "message", "artifact_name": "payment"}, "artifact_name"),
+        ({"type": "checkout", "payment_id": "pay-1"}, "payment_id"),
+        ({"type": "payment", "order_id": "order-1"}, "order_id"),
+        ({"status": "Success", "error": "declined"}, "successful"),
+        ({"path": "/bad~2escape"}, "RFC 6901"),
+        ({"trusted_issuer_jwk": "/issuer.jwk"}, "relative"),
+        ({"trusted_issuer_jwk": "bad\0key"}, "null byte"),
+    ],
+)
+def test_rejects_invalid_receipt_expectation_shape(
+    updates: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _receipt_expectation(**updates)
+
+
+def test_evaluates_and_redacts_receipt_bound_to_verified_mandate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    _write_jwk(tmp_path / "issuer.jwk")
+    calls: dict[str, Any] = {}
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk(calls))
+    mandate = _expectation(id="payment")
+    receipt = _receipt_expectation(
+        issuer="processor.example",
+        status="Success",
+        payment_id="pay-1",
+    )
+    token = _receipt_token()
+    part = _part(
+        {
+            "ap2.mandates.PaymentMandateSdJwt": "signed-chain",
+            "payment_receipt": token,
+        }
+    )
+
+    assert evaluate_ap2([mandate, receipt], (part,), tmp_path) == []
+    public_jwk = json.loads((tmp_path / "issuer.jwk").read_text(encoding="utf-8"))
+    assert calls["closed_mandate"] == "signed-chain"
+    assert calls["jwk"] == public_jwk
+    assert calls["receipt_verify"] == (token, public_jwk)
+    assert calls["receipt_model"][0] == "payment"
+    assert calls["receipt_model"][2] is True
+    assert redact_ap2([mandate, receipt], (part,))[0].value == {
+        "ap2.mandates.PaymentMandateSdJwt": ap2_module.REDACTED_AP2_MANDATE,
+        "payment_receipt": ap2_module.REDACTED_AP2_RECEIPT,
+    }
+
+    assert evaluate_ap2([receipt, mandate], (part,), tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("expectation", "payload", "message"),
+    [
+        (
+            _receipt_expectation(status="Error", payment_id="pay-2"),
+            {
+                "status": "Success",
+                "iss": "processor.example",
+                "iat": 1,
+                "reference": "computed-hash",
+                "payment_id": "pay-1",
+            },
+            "receipt status does not match the expected value; "
+            "receipt payment_id does not match the expected value",
+        ),
+        (
+            _receipt_expectation(
+                type="checkout",
+                path="/checkout_receipt",
+                status="Error",
+                order_id="order-2",
+                error="other-error",
+            ),
+            {
+                "status": "Error",
+                "iss": "merchant.example",
+                "iat": 1,
+                "reference": "computed-hash",
+                "order_id": "order-1",
+                "error": "declined",
+            },
+            "receipt order_id does not match the expected value; "
+            "receipt error does not match the expected value",
+        ),
+    ],
+)
+def test_contract_receipt_applies_every_expected_field(
+    tmp_path: Path,
+    expectation: AP2ReceiptExpectation,
+    payload: dict[str, Any],
+    message: str,
+) -> None:
+    _write_jwk(tmp_path / "issuer.jwk")
+
+    with pytest.raises(AP2VerificationError) as raised:
+        _verify_receipt(
+            expectation,
+            _receipt_token(),
+            "computed-hash",
+            tmp_path,
+            _sdk({}, receipt_payload=payload),
+        )
+
+    assert str(raised.value) == message
+
+
+@pytest.mark.parametrize(
+    ("receipt_payload", "message"),
+    [
+        ({"status": "Success"}, "does not bind to the verified mandate"),
+        (
+            {
+                "status": "Success",
+                "iss": "other.example",
+                "iat": 1,
+                "reference": "computed-hash",
+                "payment_id": "pay-1",
+            },
+            "receipt iss does not match",
+        ),
+    ],
+)
+def test_reports_receipt_constraint_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_payload: dict[str, Any],
+    message: str,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    _write_jwk(tmp_path / "issuer.jwk")
+    sdk = _sdk({}, receipt_payload=receipt_payload)
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: sdk)
+    receipt = _receipt_expectation(issuer="processor.example")
+    part = _part(
+        {
+            "ap2.mandates.PaymentMandateSdJwt": "signed-chain",
+            "payment_receipt": _receipt_token(),
+        }
+    )
+
+    failures = evaluate_ap2([_expectation(id="payment"), receipt], (part,), tmp_path)
+
+    assert len(failures) == 1
+    assert message in failures[0]
+
+
+def test_receipt_evaluation_reports_missing_invalid_and_unbound_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    _write_jwk(tmp_path / "issuer.jwk")
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk({}))
+    mandate = _expectation(id="payment")
+    receipt = _receipt_expectation()
+
+    assert evaluate_ap2([mandate, receipt], (_part({}),), tmp_path) == [
+        "AP2 mandate path '/ap2.mandates.PaymentMandateSdJwt' was not found",
+        "AP2 receipt path '/payment_receipt' was not found",
+    ]
+    non_string = _part(
+        {
+            "ap2.mandates.PaymentMandateSdJwt": "signed-chain",
+            "payment_receipt": {},
+        }
+    )
+    assert (
+        "receipt value is not a string"
+        in evaluate_ap2([mandate, receipt], (non_string,), tmp_path)[0]
+    )
+    failed_mandate = _part(
+        {
+            "ap2.mandates.PaymentMandateSdJwt": 1,
+            "payment_receipt": _receipt_token(),
+        }
+    )
+    assert (
+        "bound mandate 'payment' did not verify"
+        in evaluate_ap2([mandate, receipt], (failed_mandate,), tmp_path)[1]
+    )
+
+
+def test_receipt_evaluation_uses_later_valid_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    _write_jwk(tmp_path / "issuer.jwk")
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk({}))
+    expectations = [_expectation(id="payment"), _receipt_expectation()]
+    parts = (
+        _part(
+            {
+                "ap2.mandates.PaymentMandateSdJwt": "signed-chain",
+                "payment_receipt": {},
+            }
+        ),
+        _part({"payment_receipt": _receipt_token()}),
+    )
+
+    assert evaluate_ap2(expectations, parts, tmp_path) == []
+
+
+def test_receipt_evaluation_reports_every_missing_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk({}))
+    expectations = [
+        _expectation(id="payment"),
+        _receipt_expectation(path="/missing-one"),
+        _receipt_expectation(path="/missing-two"),
+    ]
+    part = _part({"ap2.mandates.PaymentMandateSdJwt": "signed-chain"})
+
+    assert evaluate_ap2(expectations, (part,), tmp_path) == [
+        "AP2 receipt path '/missing-one' was not found",
+        "AP2 receipt path '/missing-two' was not found",
+    ]
+
+
+def test_receipt_evaluation_reports_every_unbound_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_jwk(tmp_path / "root.jwk")
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk({}))
+    expectations = [
+        _expectation(id="payment"),
+        _receipt_expectation(path="/receipt-one"),
+        _receipt_expectation(path="/receipt-two"),
+    ]
+    part = _part(
+        {
+            "ap2.mandates.PaymentMandateSdJwt": 1,
+            "receipt-one": _receipt_token(),
+            "receipt-two": _receipt_token(),
+        }
+    )
+
+    failures = evaluate_ap2(expectations, (part,), tmp_path)
+
+    assert len(failures) == 3
+    assert failures[1:] == [
+        "AP2 payment receipt verification failed: bound mandate 'payment' did not verify",
+        "AP2 payment receipt verification failed: bound mandate 'payment' did not verify",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("token", "message"),
+    [
+        ("not-a-jwt", "compact JWT"),
+        ("%%%.payload.signature", "invalid protected header"),
+        (_receipt_token("none"), "must use ES256"),
+    ],
+)
+def test_requires_an_es256_receipt_header(token: str, message: str) -> None:
+    with pytest.raises(AP2VerificationError) as raised:
+        _require_es256_header(token)
+    expected = {
+        "compact JWT": "receipt is not a compact JWT",
+        "invalid protected header": "receipt has an invalid protected header",
+        "must use ES256": "receipt protected header must use ES256",
+    }
+    assert str(raised.value) == expected[message]
+
+
+def test_decodes_a_padded_es256_header() -> None:
+    header = urlsafe_b64encode(b'{"alg":"ES256","kid":"ab"}').decode().rstrip("=")
+
+    _require_es256_header(f"{header}.payload.signature")
+
+
+def test_receipt_verifier_rejects_signature_schema_and_reference_failures() -> None:
+    token = _receipt_token()
+    with pytest.raises(AP2VerificationError, match="signature or payload"):
+        _verify_receipt_token(
+            token,
+            object(),
+            "payment",
+            "computed-hash",
+            _sdk({}, receipt_error=ValueError("bad signature")),
+            issuer=None,
+            status=None,
+            payment_id=None,
+            order_id=None,
+            error_code=None,
+        )
+
+    checkout_payload = {
+        "status": "Success",
+        "iss": "merchant.example",
+        "iat": 1_700_000_001,
+        "reference": "computed-hash",
+        "order_id": "order-1",
+    }
+    with pytest.raises(AP2VerificationError) as raised:
+        _verify_receipt_token(
+            token,
+            object(),
+            "checkout",
+            "computed-hash",
+            _sdk({}, receipt_payload=checkout_payload),
+            issuer=None,
+            status=None,
+            payment_id=None,
+            order_id="order-2",
+            error_code=None,
+        )
+    assert str(raised.value) == "receipt order_id does not match the expected value"
+
+    with pytest.raises(AP2VerificationError, match="signature or payload"):
+        _verify_receipt_token(
+            token,
+            object(),
+            "payment",
+            "computed-hash",
+            _sdk({}, receipt_payload=[]),
+            issuer=None,
+            status=None,
+            payment_id=None,
+            order_id=None,
+            error_code=None,
+        )
+    with pytest.raises(AP2VerificationError, match="signature or payload"):
+        _verify_receipt_token(
+            token,
+            object(),
+            "payment",
+            "computed-hash",
+            _sdk({}, receipt_model_error=ValueError("bad schema")),
+            issuer=None,
+            status=None,
+            payment_id=None,
+            order_id=None,
+            error_code=None,
+        )
+    with pytest.raises(AP2VerificationError, match="does not bind to the verified mandate"):
+        _verify_receipt_token(
+            token,
+            object(),
+            "payment",
+            "other-hash",
+            _sdk({}),
+            issuer=None,
+            status=None,
+            payment_id=None,
+            order_id=None,
+            error_code=None,
+        )
+
+
+def test_inspects_payment_and_checkout_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = _write_jwk(tmp_path / "issuer.jwk")
+    public_jwk = json.loads(key.read_text(encoding="utf-8"))
+    payment_payload = {
+        "status": "Success",
+        "iss": "processor.example",
+        "iat": 1_700_000_000,
+        "reference": "computed-hash",
+        "payment_id": "pay-1",
+        "psp_confirmation_id": "psp-1",
+        "network_confirmation_id": "network-1",
+    }
+    payment_calls: dict[str, Any] = {}
+    payment_sdk = _sdk(payment_calls, receipt_payload=payment_payload)
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: payment_sdk)
+
+    payment = inspect_ap2_receipt(
+        _receipt_token(),
+        key,
+        "computed-hash",
+        receipt_type="payment",
+        issuer="processor.example",
+        status="Success",
+        payment_id="pay-1",
+    )
+
+    assert payment_calls["jwk"] == public_jwk
+    assert payment_calls["receipt_verify"] == (_receipt_token(), public_jwk)
+    assert payment_calls["receipt_model"] == ("payment", payment_payload, True)
+    assert payment.as_dict() == {
+        "valid": True,
+        "kind": "receipt",
+        "type": "payment",
+        "issuer": "processor.example",
+        "status": "Success",
+        "reference": "computed-hash",
+        "checks": ["es256_signature", "payload_schema", "mandate_reference"],
+        "details": {
+            "issued_at": 1_700_000_000,
+            "error": None,
+            "error_description": None,
+            "payment_id": "pay-1",
+            "psp_confirmation_id": "psp-1",
+            "network_confirmation_id": "network-1",
+        },
+    }
+
+    checkout_payload = {
+        "status": "Error",
+        "iss": "merchant.example",
+        "iat": 1_700_000_001,
+        "reference": "computed-hash",
+        "error": "declined",
+        "error_description": "Payment declined",
+        "order_id": "order-1",
+    }
+    checkout_calls: dict[str, Any] = {}
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk(checkout_calls, receipt_payload=checkout_payload),
+    )
+    checkout = inspect_ap2_receipt(
+        _receipt_token(),
+        key,
+        "computed-hash",
+        receipt_type="checkout",
+        issuer="merchant.example",
+        status="Error",
+        order_id="order-1",
+        error_code="declined",
+    )
+    assert checkout_calls["jwk"] == public_jwk
+    assert checkout_calls["receipt_verify"] == (_receipt_token(), public_jwk)
+    assert checkout_calls["receipt_model"] == ("checkout", checkout_payload, True)
+    assert checkout.as_dict() == {
+        "valid": True,
+        "kind": "receipt",
+        "type": "checkout",
+        "issuer": "merchant.example",
+        "status": "Error",
+        "reference": "computed-hash",
+        "checks": ["es256_signature", "payload_schema", "mandate_reference"],
+        "details": {
+            "issued_at": 1_700_000_001,
+            "error": "declined",
+            "error_description": "Payment declined",
+            "order_id": "order-1",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("receipt_type", "payload", "expected", "message"),
+    [
+        (
+            "payment",
+            {
+                "status": "Success",
+                "iss": "processor.example",
+                "iat": 1,
+                "reference": "computed-hash",
+                "payment_id": "pay-1",
+            },
+            {
+                "issuer": "other.example",
+                "status": "Error",
+                "payment_id": "pay-2",
+            },
+            "receipt iss does not match the expected value; "
+            "receipt status does not match the expected value; "
+            "receipt payment_id does not match the expected value",
+        ),
+        (
+            "checkout",
+            {
+                "status": "Error",
+                "iss": "merchant.example",
+                "iat": 1,
+                "reference": "computed-hash",
+                "order_id": "order-1",
+                "error": "declined",
+            },
+            {"order_id": "order-2", "error_code": "other-error"},
+            "receipt order_id does not match the expected value; "
+            "receipt error does not match the expected value",
+        ),
+    ],
+)
+def test_public_receipt_inspector_applies_every_expected_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_type: Any,
+    payload: dict[str, Any],
+    expected: dict[str, Any],
+    message: str,
+) -> None:
+    key = _write_jwk(tmp_path / "issuer.jwk")
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, receipt_payload=payload),
+    )
+
+    with pytest.raises(AP2VerificationError) as raised:
+        inspect_ap2_receipt(
+            _receipt_token(),
+            key,
+            "computed-hash",
+            receipt_type=receipt_type,
+            **expected,
+        )
+
+    assert str(raised.value) == message
+
+
+def test_receipt_input_and_reference_helpers_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert read_ap2_receipt_token(BytesIO(b" receipt.jwt.value\n")) == "receipt.jwt.value"
+    calls: dict[str, Any] = {}
+    monkeypatch.setattr(ap2_module, "_load_sdk", lambda: _sdk(calls))
+    assert ap2_mandate_reference("signed-chain") == "computed-hash"
+    assert calls["closed_mandate"] == "signed-chain"
+    assert calls["hashed"] == "closed.jwt"
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, closed_mandate_jwt=ValueError("bad chain")),
+    )
+    with pytest.raises(AP2VerificationError, match="could not be computed"):
+        ap2_mandate_reference("signed-chain")
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, closed_mandate_jwt=42),
+    )
+    with pytest.raises(AP2VerificationError, match="could not be computed"):
+        ap2_mandate_reference("signed-chain")
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, hash_result=42),
+    )
+    with pytest.raises(AP2VerificationError, match="could not be computed"):
+        ap2_mandate_reference("signed-chain")
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, closed_mandate_jwt="", hash_result=None),
+    )
+    with pytest.raises(AP2VerificationError, match="could not be computed"):
+        ap2_mandate_reference("signed-chain")
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: _sdk({}, hash_result=None),
+    )
+    with pytest.raises(AP2VerificationError, match="could not be computed"):
+        ap2_mandate_reference("signed-chain")
+
+
+@pytest.mark.parametrize(
+    ("receipt_type", "updates", "message"),
+    [
+        (
+            "payment",
+            {"reference": ""},
+            "reference must contain between 1 and 1000 characters",
+        ),
+        (
+            "payment",
+            {"order_id": ""},
+            "order ID must contain between 1 and 1000 characters",
+        ),
+        ("checkout", {"payment_id": "pay-1"}, "--payment-id requires a payment receipt"),
+        ("payment", {"order_id": "order-1"}, "--order-id requires a checkout receipt"),
+        (
+            "payment",
+            {"status": "Success", "error_code": "declined"},
+            "--error cannot be asserted for a successful receipt",
+        ),
+    ],
+)
+def test_rejects_invalid_receipt_inspection_constraints(
+    receipt_type: Any,
+    updates: dict[str, Any],
+    message: str,
+) -> None:
+    values = {
+        "reference": "hash",
+        "issuer": None,
+        "status": None,
+        "payment_id": None,
+        "order_id": None,
+        "error_code": None,
+    }
+    values.update(updates)
+    with pytest.raises(AP2Error) as raised:
+        _validate_receipt_inputs(receipt_type, **values)
+    assert str(raised.value) == message
+
+
+@pytest.mark.parametrize(
+    (
+        "receipt_type",
+        "reference",
+        "issuer",
+        "status",
+        "payment_id",
+        "order_id",
+        "error_code",
+    ),
+    [
+        ("payment", "", None, None, None, None, None),
+        ("payment", "hash", "", None, None, None, None),
+        ("payment", "hash", None, "", None, None, None),
+        ("checkout", "hash", None, None, "pay-1", None, None),
+        ("payment", "hash", None, None, None, "order-1", None),
+        ("payment", "hash", None, "Success", None, None, "declined"),
+    ],
+)
+def test_public_receipt_inspector_validates_before_loading_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_type: Any,
+    reference: str,
+    issuer: str | None,
+    status: Any,
+    payment_id: str | None,
+    order_id: str | None,
+    error_code: str | None,
+) -> None:
+    monkeypatch.setattr(
+        ap2_module,
+        "_load_sdk",
+        lambda: pytest.fail("invalid input reached the AP2 SDK"),
+    )
+
+    with pytest.raises(AP2Error):
+        inspect_ap2_receipt(
+            _receipt_token(),
+            Path("unused.jwk"),
+            reference,
+            receipt_type=receipt_type,
+            issuer=issuer,
+            status=status,
+            payment_id=payment_id,
+            order_id=order_id,
+            error_code=error_code,
+        )
