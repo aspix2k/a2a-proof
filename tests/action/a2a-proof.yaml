@@ -1,0 +1,23 @@
+version: 1
+
+agent:
+  url: ${A2A_PROOF_DEMO_URL}
+
+scenarios:
+  - name: billing dispute routing
+    message: A customer says their card was charged twice for order 4815.
+    expect:
+      state: completed
+      data:
+        - path: /queue
+          equals: billing-disputes
+        - path: /priority
+          equals: high
+      files:
+        source: artifact
+        artifact_name: routing decision
+        filename: routing.txt
+        media_type: text/plain
+        kind: raw
+        size_bytes: 37
+        sha256: e0a09923f9c026cd5c93c497740dad0e74e93aa750aa49dd14bb486baf5ba392

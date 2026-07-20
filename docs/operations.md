@@ -21,6 +21,53 @@ Exit code `0` means the contract passed, `1` means it failed, and `2` means exec
 configuration failed. In `diff`, the candidate contract result controls exit code `0` or `1`; a
 failure to execute either side returns `2`.
 
+## GitHub Actions
+
+The first-party composite Action runs the contract from the source selected by the Action
+reference. It installs the pinned runtime from that source's lock file and needs no write
+permissions:
+
+```yaml
+name: A2A contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: aspix2k/a2a-proof@v0.14.0
+        with:
+          config: contracts/a2a-proof.yaml
+```
+
+The only Action input is `config`, which defaults to `a2a-proof.yaml`. Environment-backed headers
+and invariants use ordinary GitHub Actions secrets. Use the CLI directly for scenario selection,
+transport overrides, JUnit, or evidence; the Action does not upload response evidence
+automatically because it may contain application data. Configure the workflow job as a required
+check through the repository's rules when needed.
+
+Use a full Action commit SHA when repository policy requires immutable dependencies. Do not expose
+production credentials to a contract that a pull request can modify: the contract controls the
+agent URL and header references. In particular, do not combine an untrusted checkout with
+`pull_request_target` and production secrets.
+
+## Local demo
+
+`a2a-proof demo` starts a deterministic agent on an ephemeral loopback port and runs a real
+JSON-RPC contract against it. The contract checks task state, structured routing data, inline file
+size, and SHA-256. `a2a-proof demo --fail` changes one expectation, renders the normal failure
+diagnostic, and exits `1`.
+
 ## Authentication
 
 Configuration strings in the form `${NAME}` are expanded from the environment after YAML parsing.

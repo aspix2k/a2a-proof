@@ -7,6 +7,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.14.0 - 2026-07-21
+
+### Security
+
+- Made the first-party Action execute the source selected by its reference with the committed
+  `uv.lock`, a pinned `setup-uv` revision, and an explicit uv version. The contract path crosses
+  the composite Action boundary through an environment variable and remains a quoted argument
+  rather than shell input. An option terminator prevents option-like filenames from changing CLI
+  behavior.
+- Kept CI evidence opt-in. The Action neither uploads response data nor requests write
+  permissions, leaving potentially sensitive artifacts under the caller's explicit control.
+
+### Features
+
+- Added a root composite GitHub Action that runs `a2a-proof.yaml` as a behavioral CI check. Its
+  single optional `config` input selects a non-default contract; advanced controls remain in the
+  CLI.
+- Added `a2a-proof demo`, which starts a deterministic loopback agent and performs an A2A JSON-RPC
+  exchange without keys or an external service. It checks state, structured data, file size, and
+  SHA-256; `--fail` demonstrates diagnostics and exit code `1`.
+
+### Documentation
+
+- Added the local demo and minimal Action invocation to the README, while keeping complete
+  workflow, security, evidence, and advanced-option guidance in the operations guide.
+
+### Maintenance
+
+- Added a CI consumer for the repository's own Action. It starts the demo agent on an ephemeral
+  port and runs the environment-backed contract through the locked Action runtime.
+- Added CLI and live protocol coverage for both successful and intentionally failing demo paths.
+- Established a clean core mutation baseline: 4,405 of 4,579 mutants are killed (96.20%). Four
+  timeouts remain in the bounded push wait, listener, and socket-read mutations; all other abnormal
+  statuses are zero. The threaded demo agent stays under live and negative protocol tests because
+  mutating its request handlers destabilizes the in-process mutation collector.
+
 ## 0.13.0 - 2026-07-20
 
 ### Security
