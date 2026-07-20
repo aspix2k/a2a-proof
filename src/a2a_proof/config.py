@@ -128,9 +128,11 @@ def config_schema() -> dict[str, Any]:
             "maxItems": 100,
         },
     ]
-    for name in ("data", "files", "ap2"):
+    for name in ("data", "files"):
         multiple = definitions["Expectation"]["properties"][name]["anyOf"][1]
         multiple["maxItems"] = 100
+    ap2_options = definitions["Expectation"]["properties"]["ap2"]["anyOf"]
+    next(option for option in ap2_options if option.get("type") == "array")["maxItems"] = 100
     ap2_expectation = definitions["AP2MandateExpectation"]
     ap2_expectation["properties"]["path"]["anyOf"][0]["pattern"] = r"^(?:/(?:[^~]|~[01])*)*$"
     ap2_expectation["allOf"] = [
@@ -161,6 +163,38 @@ def config_schema() -> dict[str, Any]:
                 "required": ["type"],
             },
             "then": {"not": {"required": ["checkout_hash"]}},
+        },
+    ]
+    ap2_receipt = definitions["AP2ReceiptExpectation"]
+    ap2_receipt["properties"]["path"]["pattern"] = r"^(?:/(?:[^~]|~[01])*)*$"
+    ap2_receipt["allOf"] = [
+        {
+            "if": {
+                "properties": {"source": {"const": "message"}},
+                "required": ["source"],
+            },
+            "then": {"not": {"required": ["artifact_name"]}},
+        },
+        {
+            "if": {
+                "properties": {"type": {"const": "checkout"}},
+                "required": ["type"],
+            },
+            "then": {"not": {"required": ["payment_id"]}},
+        },
+        {
+            "if": {
+                "properties": {"type": {"const": "payment"}},
+                "required": ["type"],
+            },
+            "then": {"not": {"required": ["order_id"]}},
+        },
+        {
+            "if": {
+                "properties": {"status": {"const": "Success"}},
+                "required": ["status"],
+            },
+            "then": {"not": {"required": ["error"]}},
         },
     ]
     capabilities = definitions["AgentCapabilitiesExpectation"]

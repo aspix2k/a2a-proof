@@ -179,6 +179,7 @@ scenarios:
     config = load_config(path, {"PAYMENT_NONCE": "nonce-1"})
     expectation = config.scenarios[0].expect.ap2[0]
 
+    assert isinstance(expectation, models_module.AP2MandateExpectation)
     assert expectation.nonce == "nonce-1"
     assert expectation.resolved_path == "/ap2.mandates.PaymentMandateSdJwt"
 
@@ -206,6 +207,76 @@ scenarios:
     )
 
     with pytest.raises(ConfigError, match="must contain a public key only"):
+        load_config(path)
+
+
+def test_loads_bound_ap2_receipt_and_validates_issuer_key(tmp_path: Path) -> None:
+    public_jwk = '{"kty":"EC","crv":"P-256","x":"eA","y":"eQ"}'
+    _write(tmp_path / "root.jwk", public_jwk)
+    _write(tmp_path / "issuer.jwk", public_jwk)
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: payment
+    message: Pay
+    expect:
+      ap2:
+        - id: payment
+          type: payment
+          trusted_root_jwk: root.jwk
+          audience: merchant
+          nonce: nonce-1
+        - kind: receipt
+          type: payment
+          binds_to: payment
+          trusted_issuer_jwk: issuer.jwk
+          path: /payment_receipt
+          issuer: processor.example
+          status: Success
+          payment_id: pay-1
+""",
+    )
+
+    config = load_config(path)
+    receipt = config.scenarios[0].expect.ap2[1]
+
+    assert isinstance(receipt, models_module.AP2ReceiptExpectation)
+    assert receipt.binds_to == "payment"
+    assert receipt.status == "Success"
+
+
+def test_rejects_ap2_receipt_issuer_key_outside_contract(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "root.jwk",
+        '{"kty":"EC","crv":"P-256","x":"eA","y":"eQ"}',
+    )
+    path = _write(
+        tmp_path / "proof.yaml",
+        """
+version: 1
+agent: {url: https://example.com}
+scenarios:
+  - name: payment
+    message: Pay
+    expect:
+      ap2:
+        - id: payment
+          type: payment
+          trusted_root_jwk: root.jwk
+          audience: merchant
+          nonce: nonce-1
+        - kind: receipt
+          type: payment
+          binds_to: payment
+          trusted_issuer_jwk: ../issuer.jwk
+          path: /payment_receipt
+""",
+    )
+
+    with pytest.raises(ConfigError, match=r"trusted_issuer_jwk.*escapes"):
         load_config(path)
 
 

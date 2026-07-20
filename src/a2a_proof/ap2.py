@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+from base64 import urlsafe_b64decode
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from stat import S_ISREG
 from typing import Any, BinaryIO, Literal
 
-from a2a_proof.models import AP2MandateExpectation, DataPartResult, ProofConfig
+from a2a_proof.models import (
+    AP2Expectation,
+    AP2MandateExpectation,
+    AP2ReceiptExpectation,
+    DataPartResult,
+    ProofConfig,
+)
 
 AP2_SDK_COMMIT = "b4587ac1d055888a73b4b21750973cffba961793"
 AP2_INSTALL_REQUIREMENT = (
@@ -20,6 +28,8 @@ MAX_AP2_ERROR_CHARS = 500
 MAX_AP2_DETAIL_CHARS = 2_000
 MAX_AP2_EXPECTED_VALUE_CHARS = 1_000
 REDACTED_AP2_MANDATE = "[REDACTED: AP2 mandate]"
+REDACTED_AP2_RECEIPT = "[REDACTED: AP2 receipt]"
+COMPACT_JWT_SEGMENTS = 3
 _PRIVATE_JWK_FIELDS = {"d", "p", "q", "dp", "dq", "qi", "oth", "k"}
 
 
@@ -51,12 +61,37 @@ class AP2Inspection:
 
 
 @dataclass(frozen=True, slots=True)
+class AP2ReceiptInspection:
+    type: Literal["checkout", "payment"]
+    issuer: str
+    status: Literal["Success", "Error"]
+    reference: str
+    checks: tuple[str, ...]
+    details: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "valid": True,
+            "kind": "receipt",
+            "type": self.type,
+            "issuer": self.issuer,
+            "status": self.status,
+            "reference": self.reference,
+            "checks": list(self.checks),
+            "details": self.details,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class _SDK:
     mandate_client: type[Any]
     checkout_chain: type[Any]
     payment_chain: type[Any]
+    checkout_receipt: type[Any]
+    payment_receipt: type[Any]
     jwk: type[Any]
     compute_sha256_b64url: Any
+    verify_jwt: Any
 
 
 class _Missing:
@@ -67,28 +102,36 @@ _MISSING = _Missing()
 
 
 def read_ap2_token(stream: BinaryIO) -> str:
+    return _read_ap2_token(stream, "mandate")
+
+
+def read_ap2_receipt_token(stream: BinaryIO) -> str:
+    return _read_ap2_token(stream, "receipt")
+
+
+def _read_ap2_token(stream: BinaryIO, kind: Literal["mandate", "receipt"]) -> str:
     content = stream.read(MAX_AP2_TOKEN_BYTES + 1)
     if len(content) > MAX_AP2_TOKEN_BYTES:
-        raise AP2Error(f"AP2 mandate token exceeds {MAX_AP2_TOKEN_BYTES} bytes")
+        raise AP2Error(f"AP2 {kind} token exceeds {MAX_AP2_TOKEN_BYTES} bytes")
     try:
         token = content.decode("ascii").strip()
     except UnicodeDecodeError as error:
-        raise AP2Error("AP2 mandate token must be ASCII") from error
-    _validate_token(token)
+        raise AP2Error(f"AP2 {kind} token must be ASCII") from error
+    _validate_token(token, kind)
     return token
 
 
-def _validate_token(token: str) -> None:
+def _validate_token(token: str, kind: Literal["mandate", "receipt"] = "mandate") -> None:
     if not token:
-        raise AP2Error("AP2 mandate token is empty")
+        raise AP2Error(f"AP2 {kind} token is empty")
     try:
         size = len(token.encode("ascii"))
     except UnicodeEncodeError as error:
-        raise AP2Error("AP2 mandate token must be ASCII") from error
+        raise AP2Error(f"AP2 {kind} token must be ASCII") from error
     if size > MAX_AP2_TOKEN_BYTES:
-        raise AP2Error(f"AP2 mandate token exceeds {MAX_AP2_TOKEN_BYTES} bytes")
+        raise AP2Error(f"AP2 {kind} token exceeds {MAX_AP2_TOKEN_BYTES} bytes")
     if any(character.isspace() for character in token):
-        raise AP2Error("AP2 mandate token contains whitespace")
+        raise AP2Error(f"AP2 {kind} token contains whitespace")
 
 
 def inspect_ap2(
@@ -139,27 +182,91 @@ def inspect_ap2(
         raise AP2Error("verified AP2 mandate could not be summarized") from error
 
 
+def inspect_ap2_receipt(
+    token: str,
+    trusted_issuer_jwk: Path,
+    reference: str,
+    *,
+    receipt_type: Literal["checkout", "payment"],
+    issuer: str | None = None,
+    status: Literal["Success", "Error"] | None = None,
+    payment_id: str | None = None,
+    order_id: str | None = None,
+    error_code: str | None = None,
+) -> AP2ReceiptInspection:
+    _validate_token(token, "receipt")
+    _validate_receipt_inputs(
+        receipt_type,
+        reference,
+        issuer=issuer,
+        status=status,
+        payment_id=payment_id,
+        order_id=order_id,
+        error_code=error_code,
+    )
+    sdk = _load_sdk()
+    public_jwk = _read_public_jwk_file(trusted_issuer_jwk, "trusted receipt issuer")
+    issuer_key = _parse_public_jwk(
+        public_jwk,
+        f"trusted receipt issuer {trusted_issuer_jwk}",
+        sdk,
+    )
+    payload = _verify_receipt_token(
+        token,
+        issuer_key,
+        receipt_type,
+        reference,
+        sdk,
+        issuer=issuer,
+        status=status,
+        payment_id=payment_id,
+        order_id=order_id,
+        error_code=error_code,
+    )
+    return _receipt_inspection_result(receipt_type, payload)
+
+
 def has_ap2_expectations(config: ProofConfig) -> bool:
     return bool(_configured_expectations(config))
 
 
 def validate_config_ap2(config: ProofConfig) -> None:
-    paths = {expectation.trusted_root_jwk for expectation in _configured_expectations(config)}
-    for path in sorted(paths):
-        _read_public_jwk(path, config.contract_dir)
+    paths = {
+        (
+            "trusted_root_jwk"
+            if isinstance(expectation, AP2MandateExpectation)
+            else "trusted_issuer_jwk",
+            expectation.trusted_root_jwk
+            if isinstance(expectation, AP2MandateExpectation)
+            else expectation.trusted_issuer_jwk,
+        )
+        for expectation in _configured_expectations(config)
+    }
+    for field, path in sorted(paths):
+        _read_public_jwk(path, config.contract_dir, field)
 
 
 def ensure_ap2_sdk(config: ProofConfig) -> None:
     if not has_ap2_expectations(config):
         return
     sdk = _load_sdk()
-    paths = {expectation.trusted_root_jwk for expectation in _configured_expectations(config)}
-    for path in sorted(paths):
-        value = _read_public_jwk(path, config.contract_dir)
-        _parse_public_jwk(value, f"trusted_root_jwk {path!r}", sdk)
+    paths = {
+        (
+            "trusted_root_jwk"
+            if isinstance(expectation, AP2MandateExpectation)
+            else "trusted_issuer_jwk",
+            expectation.trusted_root_jwk
+            if isinstance(expectation, AP2MandateExpectation)
+            else expectation.trusted_issuer_jwk,
+        )
+        for expectation in _configured_expectations(config)
+    }
+    for field, path in sorted(paths):
+        value = _read_public_jwk(path, config.contract_dir, field)
+        _parse_public_jwk(value, f"{field} {path!r}", sdk)
 
 
-def _configured_expectations(config: ProofConfig) -> list[AP2MandateExpectation]:
+def _configured_expectations(config: ProofConfig) -> list[AP2Expectation]:
     return [
         expectation
         for scenario in config.scenarios
@@ -169,38 +276,57 @@ def _configured_expectations(config: ProofConfig) -> list[AP2MandateExpectation]
 
 
 def evaluate_ap2(
-    expectations: list[AP2MandateExpectation],
+    expectations: Sequence[AP2Expectation],
     parts: tuple[DataPartResult, ...],
     contract_dir: Path,
 ) -> list[str]:
     if not expectations:
         return []
     sdk = _load_sdk()
-    failures: list[str] = []
-    for expectation in expectations:
-        candidates = [part for part in parts if _matches_location(expectation, part)]
-        tokens = [
-            value
-            for part in candidates
-            if not isinstance(
-                value := _resolve_pointer(part.value, expectation.resolved_path),
-                _Missing,
-            )
-        ]
-        if not candidates:
-            failures.append(f"no AP2 data matched {_location(expectation)}")
+    failures: list[tuple[int, str]] = []
+    references: dict[str, str] = {}
+    for index, expectation in enumerate(expectations):
+        if isinstance(expectation, AP2ReceiptExpectation):
             continue
-        if not tokens:
-            failures.append(f"AP2 mandate path {expectation.resolved_path!r} was not found")
+        tokens, input_failure = _candidate_values(
+            expectation,
+            expectation.resolved_path,
+            "mandate",
+            parts,
+        )
+        if input_failure is not None:
+            failures.append((index, input_failure))
             continue
-        failure = _verify_any(expectation, tokens, contract_dir, sdk)
+        reference, failure = _verify_any(expectation, tokens, contract_dir, sdk)
         if failure is not None:
-            failures.append(failure)
-    return failures
+            failures.append((index, failure))
+        elif expectation.id is not None and reference is not None:
+            references[expectation.id] = reference
+    for index, expectation in enumerate(expectations):
+        if not isinstance(expectation, AP2ReceiptExpectation):
+            continue
+        tokens, input_failure = _candidate_values(expectation, expectation.path, "receipt", parts)
+        if input_failure is not None:
+            failures.append((index, input_failure))
+            continue
+        reference = references.get(expectation.binds_to)
+        if reference is None:
+            failures.append(
+                (
+                    index,
+                    f"AP2 {expectation.type} receipt verification failed: bound mandate "
+                    f"{expectation.binds_to!r} did not verify",
+                )
+            )
+            continue
+        failure = _verify_receipt_any(expectation, tokens, reference, contract_dir, sdk)
+        if failure is not None:
+            failures.append((index, failure))
+    return [failure for _, failure in sorted(failures)]
 
 
 def redact_ap2(
-    expectations: list[AP2MandateExpectation],
+    expectations: Sequence[AP2Expectation],
     parts: tuple[DataPartResult, ...],
 ) -> tuple[DataPartResult, ...]:
     redacted: list[DataPartResult] = []
@@ -212,12 +338,35 @@ def redact_ap2(
                 continue
             replaced, value = _replace_pointer(
                 value,
-                expectation.resolved_path,
-                REDACTED_AP2_MANDATE,
+                expectation.resolved_path
+                if isinstance(expectation, AP2MandateExpectation)
+                else expectation.path,
+                REDACTED_AP2_MANDATE
+                if isinstance(expectation, AP2MandateExpectation)
+                else REDACTED_AP2_RECEIPT,
             )
             changed = changed or replaced
         redacted.append(part.model_copy(update={"value": value}) if changed else part)
     return tuple(redacted)
+
+
+def _candidate_values(
+    expectation: AP2Expectation,
+    path: str,
+    kind: Literal["mandate", "receipt"],
+    parts: tuple[DataPartResult, ...],
+) -> tuple[list[Any], str | None]:
+    candidates = [part for part in parts if _matches_location(expectation, part)]
+    if not candidates:
+        return [], f"no AP2 data matched {_location(expectation)}"
+    values = [
+        value
+        for part in candidates
+        if not isinstance(value := _resolve_pointer(part.value, path), _Missing)
+    ]
+    if not values:
+        return [], f"AP2 {kind} path {path!r} was not found"
+    return values, None
 
 
 def _verify_any(
@@ -225,19 +374,18 @@ def _verify_any(
     values: list[Any],
     contract_dir: Path,
     sdk: _SDK,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     errors: list[str] = []
     for value in values:
         if not isinstance(value, str):
             errors.append("mandate value is not a string")
             continue
         try:
-            _verify(expectation, value, contract_dir, sdk)
-            return None
+            return _verify(expectation, value, contract_dir, sdk), None
         except Exception as error:
             errors.append(_bounded_error(error))
     detail = errors[0] if errors else "no mandate value was available"
-    return f"AP2 {expectation.type} mandate verification failed: {detail}"
+    return None, f"AP2 {expectation.type} mandate verification failed: {detail}"
 
 
 def _verify(
@@ -245,7 +393,7 @@ def _verify(
     token: str,
     contract_dir: Path,
     sdk: _SDK,
-) -> None:
+) -> str:
     public_jwk = _read_public_jwk(expectation.trusted_root_jwk, contract_dir)
     root_key = _parse_public_jwk(
         public_jwk,
@@ -267,6 +415,162 @@ def _verify(
         open_checkout_hash=expectation.open_checkout_hash,
         checkout_hash=expectation.checkout_hash,
     )
+    return _mandate_reference(token, sdk)
+
+
+def _verify_receipt_any(
+    expectation: AP2ReceiptExpectation,
+    values: list[Any],
+    reference: str,
+    contract_dir: Path,
+    sdk: _SDK,
+) -> str | None:
+    errors: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            errors.append("receipt value is not a string")
+            continue
+        try:
+            _verify_receipt(expectation, value, reference, contract_dir, sdk)
+            return None
+        except Exception as error:
+            errors.append(_bounded_error(error))
+    detail = errors[0] if errors else "no receipt value was available"
+    return f"AP2 {expectation.type} receipt verification failed: {detail}"
+
+
+def _verify_receipt(
+    expectation: AP2ReceiptExpectation,
+    token: str,
+    reference: str,
+    contract_dir: Path,
+    sdk: _SDK,
+) -> None:
+    public_jwk = _read_public_jwk(
+        expectation.trusted_issuer_jwk,
+        contract_dir,
+        "trusted_issuer_jwk",
+    )
+    issuer_key = _parse_public_jwk(
+        public_jwk,
+        f"trusted_issuer_jwk {expectation.trusted_issuer_jwk!r}",
+        sdk,
+    )
+    _verify_receipt_token(
+        token,
+        issuer_key,
+        expectation.type,
+        reference,
+        sdk,
+        issuer=expectation.issuer,
+        status=expectation.status,
+        payment_id=expectation.payment_id,
+        order_id=expectation.order_id,
+        error_code=expectation.error,
+    )
+
+
+def _verify_receipt_token(
+    token: str,
+    issuer_key: Any,
+    receipt_type: Literal["checkout", "payment"],
+    reference: str,
+    sdk: _SDK,
+    *,
+    issuer: str | None,
+    status: Literal["Success", "Error"] | None,
+    payment_id: str | None,
+    order_id: str | None,
+    error_code: str | None,
+) -> dict[str, Any]:
+    _validate_token(token, "receipt")
+    _require_es256_header(token)
+    try:
+        payload = sdk.verify_jwt(token, issuer_key)
+        if not isinstance(payload, dict):
+            raise TypeError
+        receipt_model = sdk.payment_receipt if receipt_type == "payment" else sdk.checkout_receipt
+        receipt_model.model_validate(payload, strict=True)
+    except Exception as error:
+        raise AP2VerificationError("receipt signature or payload is invalid") from error
+
+    if payload.get("reference") != reference:
+        raise AP2VerificationError("receipt reference does not bind to the verified mandate")
+    expected = {
+        "iss": issuer,
+        "status": status,
+        "payment_id": payment_id,
+        "order_id": order_id,
+        "error": error_code,
+    }
+    mismatches = [
+        f"receipt {field} does not match the expected value"
+        for field, value in expected.items()
+        if value is not None and payload.get(field) != value
+    ]
+    if mismatches:
+        raise AP2VerificationError("; ".join(mismatches))
+    return payload
+
+
+def _validate_receipt_inputs(
+    receipt_type: Literal["checkout", "payment"],
+    reference: str,
+    *,
+    issuer: str | None,
+    status: Literal["Success", "Error"] | None,
+    payment_id: str | None,
+    order_id: str | None,
+    error_code: str | None,
+) -> None:
+    for label, value in (
+        ("reference", reference),
+        ("issuer", issuer),
+        ("status", status),
+        ("payment ID", payment_id),
+        ("order ID", order_id),
+        ("error", error_code),
+    ):
+        if value is not None and not 1 <= len(value) <= MAX_AP2_EXPECTED_VALUE_CHARS:
+            raise AP2Error(
+                f"{label} must contain between 1 and {MAX_AP2_EXPECTED_VALUE_CHARS} characters"
+            )
+    if receipt_type == "checkout" and payment_id is not None:
+        raise AP2Error("--payment-id requires a payment receipt")
+    if receipt_type == "payment" and order_id is not None:
+        raise AP2Error("--order-id requires a checkout receipt")
+    if status == "Success" and error_code is not None:
+        raise AP2Error("--error cannot be asserted for a successful receipt")
+
+
+def _require_es256_header(token: str) -> None:
+    segments = token.split(".")
+    if len(segments) != COMPACT_JWT_SEGMENTS or not all(segments):
+        raise AP2VerificationError("receipt is not a compact JWT")
+    try:
+        header = json.loads(urlsafe_b64decode(f"{segments[0]}==="))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise AP2VerificationError("receipt has an invalid protected header") from error
+    if not isinstance(header, dict) or header.get("alg") != "ES256":
+        raise AP2VerificationError("receipt protected header must use ES256")
+
+
+def _mandate_reference(token: str, sdk: _SDK) -> str:
+    try:
+        closed_jwt = sdk.mandate_client().get_closed_mandate_jwt(token)
+        if not isinstance(closed_jwt, str) or not closed_jwt:
+            raise ValueError
+        reference = sdk.compute_sha256_b64url(closed_jwt)
+    except Exception as error:
+        raise AP2VerificationError("closed mandate reference could not be computed") from error
+    if not isinstance(reference, str) or not reference:
+        raise AP2VerificationError("closed mandate reference could not be computed")
+    return reference
+
+
+def ap2_mandate_reference(token: str) -> str:
+    _validate_token(token)
+    return _mandate_reference(token, _load_sdk())
 
 
 def _verify_signed_chain(
@@ -417,6 +721,37 @@ def _inspection_result(
     )
 
 
+def _receipt_inspection_result(
+    receipt_type: Literal["checkout", "payment"],
+    payload: dict[str, Any],
+) -> AP2ReceiptInspection:
+    details = {
+        "issued_at": payload["iat"],
+        "error": _bounded_optional_detail(payload.get("error")),
+        "error_description": _bounded_optional_detail(payload.get("error_description")),
+    }
+    if receipt_type == "payment":
+        details.update(
+            {
+                "payment_id": _bounded_detail(payload["payment_id"]),
+                "psp_confirmation_id": _bounded_optional_detail(payload.get("psp_confirmation_id")),
+                "network_confirmation_id": _bounded_optional_detail(
+                    payload.get("network_confirmation_id")
+                ),
+            }
+        )
+    else:
+        details["order_id"] = _bounded_optional_detail(payload.get("order_id"))
+    return AP2ReceiptInspection(
+        type=receipt_type,
+        issuer=_bounded_detail(payload["iss"]),
+        status=payload["status"],
+        reference=_bounded_detail(payload["reference"]),
+        checks=("es256_signature", "payload_schema", "mandate_reference"),
+        details=details,
+    )
+
+
 def _bounded_detail(value: Any) -> str:
     text = str(value)
     if len(text) <= MAX_AP2_DETAIL_CHARS:
@@ -424,11 +759,18 @@ def _bounded_detail(value: Any) -> str:
     return f"{text[: MAX_AP2_DETAIL_CHARS - 1]}…"
 
 
+def _bounded_optional_detail(value: Any) -> str | None:
+    return None if value is None else _bounded_detail(value)
+
+
 def _load_sdk() -> _SDK:
     try:
         mandate = import_module("ap2.sdk.mandate")
         checkout = import_module("ap2.sdk.checkout_mandate_chain")
         payment = import_module("ap2.sdk.payment_mandate_chain")
+        checkout_receipt = import_module("ap2.sdk.generated.checkout_receipt")
+        payment_receipt = import_module("ap2.sdk.generated.payment_receipt")
+        jwt_helper = import_module("ap2.sdk.jwt_helper")
         utils = import_module("ap2.sdk.utils")
         jwk = import_module("jwcrypto.jwk")
         mandate.__dict__["LOG_FILE_PATH"] = os.devnull
@@ -436,8 +778,11 @@ def _load_sdk() -> _SDK:
             mandate_client=mandate.MandateClient,
             checkout_chain=checkout.CheckoutMandateChain,
             payment_chain=payment.PaymentMandateChain,
+            checkout_receipt=checkout_receipt.CheckoutReceipt,
+            payment_receipt=payment_receipt.PaymentReceipt,
             jwk=jwk.JWK,
             compute_sha256_b64url=utils.compute_sha256_b64url,
+            verify_jwt=jwt_helper.verify_jwt,
         )
     except (AttributeError, ImportError) as error:
         raise AP2Error(
@@ -453,23 +798,27 @@ def _parse_public_jwk(value: dict[str, Any], label: str, sdk: _SDK) -> Any:
         raise AP2Error(f"{label} is not a valid public P-256 JWK") from error
 
 
-def _read_public_jwk_file(path: Path) -> dict[str, Any]:
+def _read_public_jwk_file(path: Path, label: str = "trusted root") -> dict[str, Any]:
     try:
         resolved = path.resolve(strict=True)
     except OSError as error:
-        raise AP2Error(f"cannot access trusted root {path}: {error}") from error
-    return _read_public_jwk_path(resolved, f"trusted root {path}")
+        raise AP2Error(f"cannot access {label} {path}: {error}") from error
+    return _read_public_jwk_path(resolved, f"{label} {path}")
 
 
-def _read_public_jwk(relative_path: str, contract_dir: Path) -> dict[str, Any]:
+def _read_public_jwk(
+    relative_path: str,
+    contract_dir: Path,
+    field: str = "trusted_root_jwk",
+) -> dict[str, Any]:
     root = contract_dir.resolve()
     try:
         path = (root / relative_path).resolve()
     except OSError as error:
-        raise AP2Error(f"cannot access trusted_root_jwk {relative_path!r}: {error}") from error
+        raise AP2Error(f"cannot access {field} {relative_path!r}: {error}") from error
     if not path.is_relative_to(root):
-        raise AP2Error(f"trusted_root_jwk {relative_path!r} escapes the contract directory")
-    return _read_public_jwk_path(path, f"trusted_root_jwk {relative_path!r}")
+        raise AP2Error(f"{field} {relative_path!r} escapes the contract directory")
+    return _read_public_jwk_path(path, f"{field} {relative_path!r}")
 
 
 def _read_public_jwk_path(path: Path, label: str) -> dict[str, Any]:
@@ -505,7 +854,7 @@ def _read_public_jwk_path(path: Path, label: str) -> dict[str, Any]:
 
 
 def _matches_location(
-    expectation: AP2MandateExpectation,
+    expectation: AP2Expectation,
     part: DataPartResult,
 ) -> bool:
     if expectation.source is not None and part.source != expectation.source:
@@ -518,7 +867,7 @@ def _matches_location(
     )
 
 
-def _location(expectation: AP2MandateExpectation) -> str:
+def _location(expectation: AP2Expectation) -> str:
     filters = [
         f"{label} {value!r}"
         for label, value in (

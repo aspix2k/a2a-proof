@@ -9,7 +9,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterfa
 from click.testing import CliRunner
 
 import a2a_proof.cli as cli_module
-from a2a_proof.ap2 import AP2Inspection
+from a2a_proof.ap2 import AP2Inspection, AP2ReceiptInspection
 from a2a_proof.cli import main
 from a2a_proof.models import ProofConfig, ScenarioResult, SuiteResult, TrialResult
 
@@ -31,6 +31,24 @@ def _ap2_inspection() -> AP2Inspection:
             "payee": {"id": "shop-1", "name": "Shop"},
             "amount": {"minor_units": 1_000, "currency": "USD"},
             "payment_instrument_type": "card",
+        },
+    )
+
+
+def _receipt_inspection() -> AP2ReceiptInspection:
+    return AP2ReceiptInspection(
+        type="payment",
+        issuer="processor.example",
+        status="Success",
+        reference="mandate-hash",
+        checks=("es256_signature", "payload_schema", "mandate_reference"),
+        details={
+            "issued_at": 1_700_000_000,
+            "error": None,
+            "error_description": None,
+            "payment_id": "pay-1",
+            "psp_confirmation_id": "psp-1",
+            "network_confirmation_id": "network-1",
         },
     )
 
@@ -170,6 +188,168 @@ def test_ap2_inspect_reports_setup_error_without_traceback(
 
     assert result.exit_code == 2
     assert result.output == "Error: official AP2 SDK is unavailable\n"
+
+
+def test_ap2_inspect_receipt_reads_stdin_and_renders_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def inspect(token, key, reference, **options):
+        assert token == "header.payload.signature"
+        assert key == Path("issuer.jwk")
+        assert reference == "mandate-hash"
+        assert options == {
+            "receipt_type": "payment",
+            "issuer": "processor.example",
+            "status": "Success",
+            "payment_id": "pay-1",
+            "order_id": None,
+            "error_code": None,
+        }
+        return _receipt_inspection()
+
+    monkeypatch.setattr(cli_module, "inspect_ap2_receipt", inspect)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect-receipt",
+            "--issuer-key",
+            "issuer.jwk",
+            "--type",
+            "payment",
+            "--reference",
+            "mandate-hash",
+            "--issuer",
+            "processor.example",
+            "--status",
+            "Success",
+            "--payment-id",
+            "pay-1",
+            "--format",
+            "json",
+        ],
+        input="header.payload.signature\n",
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == _receipt_inspection().as_dict()
+
+
+def test_ap2_inspect_receipt_computes_reference_from_mandate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mandate = tmp_path / "mandate.txt"
+    mandate.write_text("signed-chain", encoding="ascii")
+    monkeypatch.setattr(cli_module, "ap2_mandate_reference", lambda token: f"hash:{token}")
+    monkeypatch.setattr(
+        cli_module,
+        "inspect_ap2_receipt",
+        lambda token, key, reference, **options: _receipt_inspection(),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect-receipt",
+            "--issuer-key",
+            "issuer.jwk",
+            "--type",
+            "payment",
+            "--mandate",
+            str(mandate),
+        ],
+        input="header.payload.signature\n",
+    )
+
+    assert result.exit_code == 0
+    assert "AP2 PAYMENT RECEIPT — VALID" in result.output
+    assert "pay-1" in result.output
+    assert "header.payload.signature" not in result.output
+
+
+@pytest.mark.parametrize(
+    "references",
+    [[], ["--reference", "hash", "--mandate", "tests/test_cli.py"]],
+)
+def test_ap2_inspect_receipt_requires_exactly_one_reference(references: list[str]) -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect-receipt",
+            "--issuer-key",
+            "issuer.jwk",
+            "--type",
+            "payment",
+            *references,
+        ],
+        input="header.payload.signature\n",
+    )
+
+    assert result.exit_code == 2
+    assert "provide exactly one of --mandate or --reference" in result.output
+
+
+@pytest.mark.parametrize("output_format", ["terminal", "json"])
+def test_ap2_inspect_receipt_reports_invalid_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    output_format: str,
+) -> None:
+    def reject(*args, **kwargs):
+        raise cli_module.AP2VerificationError("receipt signature is invalid")
+
+    monkeypatch.setattr(cli_module, "inspect_ap2_receipt", reject)
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect-receipt",
+            "--issuer-key",
+            "issuer.jwk",
+            "--type",
+            "payment",
+            "--reference",
+            "hash",
+            "--format",
+            output_format,
+        ],
+        input="header.payload.signature\n",
+    )
+
+    assert result.exit_code == 1
+    assert "receipt signature is invalid" in result.output
+    assert "header.payload.signature" not in result.output
+    if output_format == "terminal":
+        assert "AP2 RECEIPT — INVALID" in result.output
+    else:
+        assert json.loads(result.output)["valid"] is False
+
+
+def test_ap2_inspect_receipt_reports_setup_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args, **kwargs):
+        raise cli_module.AP2Error("receipt key is unavailable")
+
+    monkeypatch.setattr(cli_module, "inspect_ap2_receipt", fail)
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect-receipt",
+            "--issuer-key",
+            "issuer.jwk",
+            "--type",
+            "payment",
+            "--reference",
+            "hash",
+        ],
+        input="header.payload.signature\n",
+    )
+
+    assert result.exit_code == 2
+    assert result.output == "Error: receipt key is unavailable\n"
 
 
 def test_check_validates_configuration(tmp_path: Path) -> None:

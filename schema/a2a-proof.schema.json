@@ -105,6 +105,21 @@
           "default": null,
           "title": "Checkout Hash"
         },
+        "id": {
+          "anyOf": [
+            {
+              "description": "Local AP2 assertion ID.",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "ID used by a receipt assertion in the same turn.",
+          "title": "Id"
+        },
         "media_type": {
           "anyOf": [
             {
@@ -207,6 +222,247 @@
         "nonce"
       ],
       "title": "AP2MandateExpectation",
+      "type": "object"
+    },
+    "AP2ReceiptExpectation": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "message"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "artifact_name"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "checkout"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "payment_id"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "payment"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "order_id"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "Success"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Name"
+        },
+        "binds_to": {
+          "description": "Verified mandate assertion ID.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Binds To",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "issuer": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Issuer"
+        },
+        "kind": {
+          "const": "receipt",
+          "title": "Kind",
+          "type": "string"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "order_id": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order Id"
+        },
+        "path": {
+          "description": "RFC 6901 pointer to the signed receipt JWT.",
+          "maxLength": 1000,
+          "pattern": "^(?:/(?:[^~]|~[01])*)*$",
+          "title": "Path",
+          "type": "string"
+        },
+        "payment_id": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payment Id"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "artifact"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "Success",
+                "Error"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "trusted_issuer_jwk": {
+          "description": "Receipt issuer public JWK path relative to the contract file.",
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Trusted Issuer Jwk",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "checkout",
+            "payment"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "type",
+        "binds_to",
+        "trusted_issuer_jwk",
+        "path"
+      ],
+      "title": "AP2ReceiptExpectation",
       "type": "object"
     },
     "AgentCapabilitiesExpectation": {
@@ -609,14 +865,24 @@
               "$ref": "#/$defs/AP2MandateExpectation"
             },
             {
+              "$ref": "#/$defs/AP2ReceiptExpectation"
+            },
+            {
               "items": {
-                "$ref": "#/$defs/AP2MandateExpectation"
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AP2MandateExpectation"
+                  },
+                  {
+                    "$ref": "#/$defs/AP2ReceiptExpectation"
+                  }
+                ]
               },
               "maxItems": 100,
               "type": "array"
             }
           ],
-          "description": "Signed AP2 mandate chain checks.",
+          "description": "Signed AP2 mandate and receipt checks.",
           "title": "Ap2"
         },
         "data": {

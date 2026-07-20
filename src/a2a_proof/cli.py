@@ -15,8 +15,11 @@ from a2a_proof.a2a import discover_agent
 from a2a_proof.ap2 import (
     AP2Error,
     AP2VerificationError,
+    ap2_mandate_reference,
     ensure_ap2_sdk,
     inspect_ap2,
+    inspect_ap2_receipt,
+    read_ap2_receipt_token,
     read_ap2_token,
 )
 from a2a_proof.config import ConfigError, load_config, write_config
@@ -27,6 +30,8 @@ from a2a_proof.reporting import (
     render_ap2_invalid,
     render_ap2_invalid_json,
     render_ap2_json,
+    render_ap2_receipt_invalid,
+    render_ap2_receipt_terminal,
     render_ap2_terminal,
     render_diff_json,
     render_diff_terminal,
@@ -53,7 +58,7 @@ def main() -> None:
 
 @main.group("ap2")
 def ap2_command() -> None:
-    """Inspect signed AP2 mandates."""
+    """Inspect signed AP2 mandates and receipts."""
 
 
 @ap2_command.command("inspect")
@@ -122,6 +127,91 @@ def ap2_inspect_command(
         click.echo(render_ap2_json(result))
     else:
         render_ap2_terminal(result, Console())
+
+
+@ap2_command.command("inspect-receipt")
+@click.argument(
+    "receipt_file",
+    type=click.File("rb"),
+    default="-",
+)
+@click.option(
+    "--issuer-key",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Public P-256 JWK used to verify the receipt issuer.",
+)
+@click.option(
+    "receipt_type",
+    "--type",
+    required=True,
+    type=click.Choice(["checkout", "payment"]),
+)
+@click.option(
+    "--mandate",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="Mandate chain whose closed JWT the receipt must reference.",
+)
+@click.option("--reference", help="Expected closed-mandate reference hash.")
+@click.option("--issuer", help="Expected receipt issuer.")
+@click.option("--status", type=click.Choice(["Success", "Error"]))
+@click.option("--payment-id", help="Expected payment ID.")
+@click.option("--order-id", help="Expected order ID.")
+@click.option("error_code", "--error", help="Expected receipt error code.")
+@click.option(
+    "output_format",
+    "--format",
+    type=click.Choice(["terminal", "json"]),
+    default="terminal",
+)
+def ap2_inspect_receipt_command(
+    receipt_file: BinaryIO,
+    issuer_key: Path,
+    receipt_type: Literal["checkout", "payment"],
+    mandate: Path | None,
+    reference: str | None,
+    issuer: str | None,
+    status: Literal["Success", "Error"] | None,
+    payment_id: str | None,
+    order_id: str | None,
+    error_code: str | None,
+    output_format: str,
+) -> None:
+    """Verify a signed AP2 receipt read from FILE or standard input."""
+    try:
+        if reference is not None:
+            if mandate is not None:
+                raise ProofCommandError("provide exactly one of --mandate or --reference")
+            expected_reference = reference
+        elif mandate is not None:
+            with mandate.open("rb") as stream:
+                expected_reference = ap2_mandate_reference(read_ap2_token(stream))
+        else:
+            raise ProofCommandError("provide exactly one of --mandate or --reference")
+        result = inspect_ap2_receipt(
+            read_ap2_receipt_token(receipt_file),
+            issuer_key,
+            expected_reference,
+            receipt_type=receipt_type,
+            issuer=issuer,
+            status=status,
+            payment_id=payment_id,
+            order_id=order_id,
+            error_code=error_code,
+        )
+    except AP2VerificationError as error:
+        if output_format == "json":
+            click.echo(render_ap2_invalid_json(str(error)))
+        else:
+            render_ap2_receipt_invalid(str(error), Console())
+        raise click.exceptions.Exit(1) from error
+    except (AP2Error, OSError) as error:
+        raise ProofCommandError(str(error)) from error
+
+    if output_format == "json":
+        click.echo(render_ap2_json(result))
+    else:
+        render_ap2_receipt_terminal(result, Console())
 
 
 @main.command("init")

@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 from rich.console import Console
 
-from a2a_proof.ap2 import AP2Inspection
+from a2a_proof.ap2 import AP2Inspection, AP2ReceiptInspection
 from a2a_proof.models import (
     CardResult,
     DiffCheck,
@@ -22,6 +22,8 @@ from a2a_proof.reporting import (
     render_ap2_invalid,
     render_ap2_invalid_json,
     render_ap2_json,
+    render_ap2_receipt_invalid,
+    render_ap2_receipt_terminal,
     render_ap2_terminal,
     render_diff_json,
     render_diff_terminal,
@@ -120,6 +122,76 @@ def test_renders_ap2_invalid_without_control_characters() -> None:
     assert json.loads(render_ap2_invalid_json("bad\x1b[31m signature")) == {
         "valid": False,
         "error": "bad[31m signature",
+    }
+
+
+def test_renders_payment_and_error_checkout_receipts() -> None:
+    payment = AP2ReceiptInspection(
+        type="payment",
+        issuer="processor\x1b[31m.example",
+        status="Success",
+        reference="mandate-hash",
+        checks=("signature", "schema", "reference"),
+        details={
+            "issued_at": 1_700_000_000,
+            "error": None,
+            "error_description": None,
+            "payment_id": "pay-1",
+            "psp_confirmation_id": "psp-1",
+            "network_confirmation_id": "network-1",
+        },
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_ap2_receipt_terminal(payment, console)
+
+    output = console.export_text()
+    assert "AP2 PAYMENT RECEIPT — VALID" in output
+    assert "processor[31m.example" in output
+    assert "pay-1" in output
+    assert "network-1" in output
+    assert "\x1b" not in output
+    assert json.loads(render_ap2_json(payment))["reference"] == "mandate-hash"
+
+    checkout = AP2ReceiptInspection(
+        type="checkout",
+        issuer="merchant.example",
+        status="Error",
+        reference="checkout-hash",
+        checks=("signature", "schema", "reference"),
+        details={
+            "issued_at": 1_700_000_001,
+            "error": "declined",
+            "error_description": "Payment declined",
+            "order_id": None,
+        },
+    )
+    checkout_console = Console(record=True, color_system=None, width=100)
+    render_ap2_receipt_terminal(checkout, checkout_console)
+    assert "declined" in checkout_console.export_text()
+    assert "Order" not in checkout_console.export_text()
+
+    checkout.details["order_id"] = "order-1"
+    order_console = Console(record=True, color_system=None, width=100)
+    render_ap2_receipt_terminal(checkout, order_console)
+    assert "order-1" in order_console.export_text()
+
+    payment.details["psp_confirmation_id"] = None
+    payment.details["network_confirmation_id"] = None
+    no_confirmation_console = Console(record=True, color_system=None, width=100)
+    render_ap2_receipt_terminal(payment, no_confirmation_console)
+    assert "confirmation" not in no_confirmation_console.export_text()
+
+
+def test_renders_invalid_receipt_without_control_characters() -> None:
+    console = Console(record=True, color_system=None, width=100)
+
+    render_ap2_receipt_invalid("bad\x1b[31m receipt", console)
+
+    assert console.export_text() == "AP2 RECEIPT — INVALID\nReason: bad[31m receipt\n"
+    assert json.loads(render_ap2_invalid_json("bad\x1b[31m receipt")) == {
+        "valid": False,
+        "error": "bad[31m receipt",
     }
 
 

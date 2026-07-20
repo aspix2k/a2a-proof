@@ -28,6 +28,10 @@ NonEmptyText = Annotated[str, Field(min_length=1, max_length=100_000)]
 StateName = Annotated[str, Field(min_length=1, max_length=64)]
 ExtensionUri = Annotated[str, Field(min_length=1, max_length=1_000)]
 EnvironmentName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=200)]
+AP2AssertionId = Annotated[
+    str,
+    Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$", description="Local AP2 assertion ID."),
+]
 MAX_INPUT_DATA_BYTES = 1_000_000
 MAX_INPUT_FILES = 20
 MAX_EXTENSIONS = 20
@@ -338,6 +342,10 @@ class DataExpectation(StrictModel):
 
 
 class AP2MandateExpectation(StrictModel):
+    id: AP2AssertionId | None = Field(
+        default=None,
+        description="ID used by a receipt assertion in the same turn.",
+    )
     type: Literal["checkout", "payment"]
     trusted_root_jwk: Annotated[
         str,
@@ -396,6 +404,63 @@ class AP2MandateExpectation(StrictModel):
         return f"/ap2.mandates.{suffix}MandateSdJwt"
 
 
+class AP2ReceiptExpectation(StrictModel):
+    kind: Literal["receipt"]
+    type: Literal["checkout", "payment"]
+    binds_to: AP2AssertionId = Field(description="Verified mandate assertion ID.")
+    trusted_issuer_jwk: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=1_000,
+            description="Receipt issuer public JWK path relative to the contract file.",
+        ),
+    ]
+    path: Annotated[
+        str,
+        Field(max_length=1_000, description="RFC 6901 pointer to the signed receipt JWT."),
+    ]
+    source: Literal["message", "artifact"] | None = None
+    artifact_name: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    media_type: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    issuer: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    status: Literal["Success", "Error"] | None = None
+    payment_id: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    order_id: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+    error: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
+
+    @field_validator("trusted_issuer_jwk")
+    @classmethod
+    def require_relative_key_path(cls, path: str) -> str:
+        if "\0" in path:
+            raise ValueError("trusted_issuer_jwk contains a null byte")
+        if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+            raise ValueError("trusted_issuer_jwk must be relative to the contract file")
+        return path
+
+    @field_validator("path")
+    @classmethod
+    def validate_json_pointer(cls, path: str) -> str:
+        if not re.fullmatch(r"(?:/(?:[^~]|~[01])*)*", path):
+            raise ValueError("path must be an RFC 6901 JSON Pointer")
+        return path
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> Self:
+        if self.source == "message" and self.artifact_name is not None:
+            raise ValueError("artifact_name cannot be used with source: message")
+        if self.type == "checkout" and self.payment_id is not None:
+            raise ValueError("payment_id requires an AP2 payment receipt")
+        if self.type == "payment" and self.order_id is not None:
+            raise ValueError("order_id requires an AP2 checkout receipt")
+        if self.status == "Success" and self.error is not None:
+            raise ValueError("error cannot be asserted for a successful AP2 receipt")
+        return self
+
+
+AP2Expectation = AP2MandateExpectation | AP2ReceiptExpectation
+
+
 class Expectation(StrictModel):
     state: str | None = Field(
         default=None,
@@ -418,10 +483,10 @@ class Expectation(StrictModel):
         max_length=100,
         description="File-part metadata checks.",
     )
-    ap2: list[AP2MandateExpectation] = Field(
+    ap2: list[AP2Expectation] = Field(
         default_factory=list,
         max_length=100,
-        description="Signed AP2 mandate chain checks.",
+        description="Signed AP2 mandate and receipt checks.",
     )
     max_seconds: float | None = Field(
         default=None,
@@ -457,11 +522,45 @@ class Expectation(StrictModel):
     @field_validator(
         "ap2",
         mode="before",
-        json_schema_input_type=AP2MandateExpectation | list[AP2MandateExpectation],
+        json_schema_input_type=AP2Expectation | list[AP2Expectation],
     )
     @classmethod
     def accept_single_ap2_expectation(cls, value: object) -> object:
-        return [value] if isinstance(value, (dict, AP2MandateExpectation)) else value
+        return (
+            [value]
+            if isinstance(value, (dict, AP2MandateExpectation, AP2ReceiptExpectation))
+            else value
+        )
+
+    @model_validator(mode="after")
+    def validate_ap2_bindings(self) -> Self:
+        mandates = {
+            expectation.id: expectation
+            for expectation in self.ap2
+            if isinstance(expectation, AP2MandateExpectation) and expectation.id is not None
+        }
+        mandate_ids = [
+            expectation.id
+            for expectation in self.ap2
+            if isinstance(expectation, AP2MandateExpectation) and expectation.id is not None
+        ]
+        if len(mandates) != len(mandate_ids):
+            raise ValueError("AP2 mandate assertion IDs must be unique within a turn")
+        for expectation in self.ap2:
+            if not isinstance(expectation, AP2ReceiptExpectation):
+                continue
+            mandate = mandates.get(expectation.binds_to)
+            if mandate is None:
+                raise ValueError(
+                    f"AP2 receipt binds_to {expectation.binds_to!r} must name a mandate "
+                    "assertion in the same turn"
+                )
+            if mandate.type != expectation.type:
+                raise ValueError(
+                    f"AP2 {expectation.type} receipt cannot bind to {mandate.type} mandate "
+                    f"{expectation.binds_to!r}"
+                )
+        return self
 
 
 class Turn(StrictModel):

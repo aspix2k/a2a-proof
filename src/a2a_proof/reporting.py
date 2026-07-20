@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from a2a_proof.ap2 import AP2Inspection
+from a2a_proof.ap2 import AP2Inspection, AP2ReceiptInspection
 from a2a_proof.models import DiffResult, ScenarioResult, SuiteResult
 
 MAX_DIAGNOSTIC_CHARS = 2_000
@@ -91,7 +91,7 @@ def render_ap2_terminal(result: AP2Inspection, console: Console) -> None:
     console.print(table)
 
 
-def render_ap2_json(result: AP2Inspection) -> str:
+def render_ap2_json(result: AP2Inspection | AP2ReceiptInspection) -> str:
     return json.dumps(result.as_dict(), ensure_ascii=False, indent=2)
 
 
@@ -102,6 +102,36 @@ def render_ap2_invalid(error: str, console: Console) -> None:
 
 def render_ap2_invalid_json(error: str) -> str:
     return json.dumps({"valid": False, "error": _diagnostic(error)}, ensure_ascii=False, indent=2)
+
+
+def render_ap2_receipt_terminal(result: AP2ReceiptInspection, console: Console) -> None:
+    console.print(Text(f"AP2 {result.type.upper()} RECEIPT — VALID", style="bold green"))
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("Issuer", Text(_safe_text(result.issuer, single_line=True)))
+    table.add_row("Status", Text(result.status))
+    table.add_row("Reference", Text(_detail(result.reference)))
+    table.add_row("Checks", f"{len(result.checks)} passed")
+    if result.type == "payment":
+        table.add_row("Payment", Text(_detail(result.details["payment_id"])))
+        if result.details["psp_confirmation_id"] is not None:
+            table.add_row("PSP confirmation", Text(_detail(result.details["psp_confirmation_id"])))
+        if result.details["network_confirmation_id"] is not None:
+            table.add_row(
+                "Network confirmation",
+                Text(_detail(result.details["network_confirmation_id"])),
+            )
+    elif result.details["order_id"] is not None:
+        table.add_row("Order", Text(_detail(result.details["order_id"])))
+    if result.details["error"] is not None:
+        table.add_row("Error", Text(_detail(result.details["error"])))
+    console.print(table)
+
+
+def render_ap2_receipt_invalid(error: str, console: Console) -> None:
+    console.print(Text("AP2 RECEIPT — INVALID", style="bold red"))
+    console.print(Text(f"Reason: {_diagnostic(error)}"))
 
 
 def render_diff_terminal(result: DiffResult, console: Console) -> None:
