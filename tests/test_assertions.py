@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from a2a.types import AgentCard, AgentSkill
 
@@ -8,6 +10,7 @@ from a2a_proof.assertions import evaluate, evaluate_card, evaluate_invariants
 from a2a_proof.models import (
     AgentCapabilitiesExpectation,
     AgentCardExpectation,
+    AP2MandateExpectation,
     DataExpectation,
     DataPartResult,
     Expectation,
@@ -58,6 +61,39 @@ def test_accepts_all_supported_text_assertions() -> None:
     )
 
     assert evaluate(expectation, _outcome()) == []
+
+
+def test_passes_ap2_inputs_to_the_ap2_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_dir = Path("contract")
+    ap2 = [
+        AP2MandateExpectation(
+            type="payment",
+            trusted_root_jwk="root.jwk",
+            audience="merchant",
+            nonce="nonce",
+        )
+    ]
+    data = (
+        DataPartResult(
+            source="artifact",
+            artifact_name="payment",
+            media_type="application/json",
+            value={"mandate": "token"},
+        ),
+    )
+    calls: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        assertions_module,
+        "evaluate_ap2",
+        lambda *args: calls.append(args) or ["AP2 failure"],
+    )
+
+    failures = evaluate(Expectation(ap2=ap2), _outcome(data=data), contract_dir=contract_dir)
+
+    assert failures == ["AP2 failure"]
+    assert calls == [(ap2, data, contract_dir)]
 
 
 def test_evaluates_global_text_invariants_without_exposing_secret_values() -> None:

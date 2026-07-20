@@ -1,8 +1,7 @@
 # AP2 mandate contracts
 
-`expect.ap2` verifies signed AP2 v0.2.0 payment and checkout mandate chains returned in A2A data
-parts. It uses Google's official SDK and an explicit public trust root supplied by the contract
-owner.
+`a2a-proof` can inspect AP2 v0.2.0 mandates offline or verify them in A2A response contracts. Both
+paths use Google's official SDK and an explicit public trust root supplied by the caller.
 
 ## Install
 
@@ -17,7 +16,44 @@ uv tool install a2a-proof \
 Do not substitute the unrelated `ap2` package from PyPI. `a2a-proof check` fails with the exact
 requirement when the official SDK is absent.
 
-## Payment mandate
+## Inspect offline
+
+The repository includes a synthetic payment mandate signed by a discarded demo key:
+
+```console
+$ a2a-proof ap2 inspect examples/ap2/payment-mandate.txt \
+    --trust-root examples/ap2/payment-root.jwk \
+    --audience merchant.example \
+    --nonce demo-payment-nonce \
+    --transaction-id demo-checkout-hash
+AP2 PAYMENT — VALID
+  Chain          2 signed mandates
+  Audience       merchant.example
+  Checks         7 passed
+  Payee          Demo Shop (demo-shop)
+  Amount         1999 USD
+  Transaction    demo-checkout-hash
+  Instrument     card
+```
+
+Use `-` or omit the file to read from standard input. The token is never accepted as a command-line
+value, echoed, or included in errors:
+
+```console
+cat payment-mandate.txt | a2a-proof ap2 inspect - \
+  --trust-root user-public.jwk \
+  --audience merchant \
+  --nonce "$AP2_PAYMENT_NONCE" \
+  --format json
+```
+
+A valid mandate exits `0`, a failed cryptographic or semantic verification exits `1`, and an input,
+key, or runtime setup error exits `2`. JSON failures have the stable shape
+`{"valid": false, "error": "..."}`.
+
+## Response contracts
+
+### Payment mandate
 
 ```yaml
 agent:
@@ -42,7 +78,7 @@ scenarios:
 `transaction_id` and `open_checkout_hash` are optional expected values. The latter is required to
 evaluate an AP2 `payment.reference` constraint when one is present.
 
-## Checkout mandate
+### Checkout mandate
 
 ```yaml
 expect:

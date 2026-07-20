@@ -62,7 +62,7 @@ $ a2a-proof run
 - Single-turn, multi-turn, repeated, and parallel trials.
 - Agent Card, state trajectory, latency, and global leak invariants.
 - Task cancellation and persistence through real A2A lifecycle operations.
-- Signed AP2 payment and checkout mandate chains.
+- Signed AP2 payment and checkout mandate chains, including offline inspection.
 - Baseline-to-candidate deployment comparison.
 - Terminal, JSON, JUnit, and bounded evidence output.
 
