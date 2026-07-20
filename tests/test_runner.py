@@ -225,6 +225,59 @@ async def test_runs_cancel_and_persistence_actions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runs_task_subscription_contract() -> None:
+    calls: list[dict[str, object]] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("working", "started", "task", "server-context", 1)
+
+    async def subscribe_task(**context: object) -> TurnOutcome:
+        calls.append(context)
+        return TurnOutcome(
+            "completed",
+            "finished",
+            "task",
+            "server-context",
+            4,
+            first_event_ms=1,
+            states=("working", "completed"),
+        )
+
+    result = await run_with_sender(
+        _config(
+            [
+                {
+                    "name": "resume long task",
+                    "turns": [
+                        {
+                            "message": "Start",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {
+                            "action": "subscribe",
+                            "expect": {
+                                "state": "completed",
+                                "states": {"contains_in_order": ["working", "completed"]},
+                                "text": {"equals": "finished"},
+                            },
+                        },
+                    ],
+                }
+            ]
+        ),
+        send_turn,
+        subscribe_task=subscribe_task,
+    )
+
+    assert result.passed
+    assert calls == [{"task_id": "task", "context_id": "server-context"}]
+    resumed = result.scenarios[0].trials[0].turns[1]
+    assert resumed.first_event_ms == 1
+    assert resumed.states == ["working", "completed"]
+
+
+@pytest.mark.asyncio
 async def test_runs_push_notification_behavior_contract() -> None:
     class Subscription:
         target = PushTarget(url="http://127.0.0.1/push", token="token")
@@ -379,6 +432,7 @@ async def test_await_push_requires_active_subscription() -> None:
     with pytest.raises(ValueError, match="no active push subscription"):
         await _execute_action(
             Turn(action="await_push"),
+            None,
             None,
             None,
             None,
@@ -650,6 +704,9 @@ async def test_run_defaults_to_sequential_trials(monkeypatch: pytest.MonkeyPatch
         async def get_task(self, **context: object) -> TurnOutcome:
             raise AssertionError("not called")
 
+        async def subscribe_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
     config = _config([{"name": "default", "message": "hello", "trials": 2}])
 
     async def connect(agent: object) -> Session:
@@ -682,6 +739,9 @@ async def test_run_does_not_open_unused_push_receiver(monkeypatch: pytest.Monkey
             raise AssertionError("not called")
 
         async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def subscribe_task(self, **context: object) -> TurnOutcome:
             raise AssertionError("not called")
 
     config = ProofConfig.model_validate(
@@ -740,6 +800,9 @@ async def test_run_wires_card_lifecycle_and_parallelism(monkeypatch: pytest.Monk
             get_calls += 1
             return TurnOutcome("canceled", "stored", "task", str(context["context_id"]), 1)
 
+        async def subscribe_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
     config = ProofConfig.model_validate(
         {
             "version": 1,
@@ -779,6 +842,70 @@ async def test_run_wires_card_lifecycle_and_parallelism(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_run_wires_task_subscription_for_all_trial_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subscription_calls = 0
+
+    class Session:
+        card = AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True))
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def send_turn(self, message: str | None, **context: object) -> TurnOutcome:
+            return TurnOutcome("working", "started", "task", str(context["context_id"]), 1)
+
+        async def cancel_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def subscribe_task(self, **context: object) -> TurnOutcome:
+            nonlocal subscription_calls
+            subscription_calls += 1
+            return TurnOutcome(
+                "completed",
+                "finished",
+                "task",
+                str(context["context_id"]),
+                1,
+                states=("working", "completed"),
+            )
+
+    config = _config(
+        [
+            {
+                "name": "resume",
+                "trials": 2,
+                "turns": [
+                    {
+                        "message": "Start",
+                        "return_immediately": True,
+                        "expect": {"state": "working"},
+                    },
+                    {"action": "subscribe", "expect": {"state": "completed"}},
+                ],
+            }
+        ]
+    )
+
+    async def connect(agent: object) -> Session:
+        assert agent is config.agent
+        return Session()
+
+    monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
+
+    for jobs in (1, 2):
+        assert (await runner_module.run(config, max_parallel_trials=jobs)).passed
+    assert subscription_calls == 4
+
+
+@pytest.mark.asyncio
 async def test_run_uses_explicit_environment_for_invariant_secrets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -798,6 +925,9 @@ async def test_run_uses_explicit_environment_for_invariant_secrets(
             raise AssertionError("not called")
 
         async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def subscribe_task(self, **context: object) -> TurnOutcome:
             raise AssertionError("not called")
 
     async def connect(agent: object) -> Session:

@@ -39,6 +39,7 @@ MAX_EXTENSIONS = 20
 MAX_EXTENSION_PARAMETER_CHARS = 8_000
 MAX_JSON_SCHEMA_BYTES = 100_000
 MAX_JSON_SCHEMA_DEPTH = 50
+MAX_EXPECTED_FILE_BYTES = 20_000_000
 _URL_ADAPTER = TypeAdapter(AnyUrl)
 _DATA_PREDICATES = {"equals", "exists", "matches", "gt", "gte", "lt", "lte", "json_schema"}
 
@@ -122,11 +123,47 @@ class FileExpectation(StrictModel):
     filename: Annotated[str, Field(min_length=1, max_length=1_000)] | None = None
     media_type: Annotated[str, Field(min_length=1, max_length=200)] | None = None
     kind: Literal["raw", "url"] | None = None
+    size_bytes: Annotated[int, Field(ge=0, le=MAX_EXPECTED_FILE_BYTES)] | SkipJsonSchema[None] = (
+        None
+    )
+    min_size_bytes: (
+        Annotated[int, Field(ge=0, le=MAX_EXPECTED_FILE_BYTES)] | SkipJsonSchema[None]
+    ) = None
+    max_size_bytes: (
+        Annotated[int, Field(ge=0, le=MAX_EXPECTED_FILE_BYTES)] | SkipJsonSchema[None]
+    ) = None
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")] | SkipJsonSchema[None] = None
+
+    @field_validator("sha256")
+    @classmethod
+    def normalize_sha256(cls, value: str | None) -> str | None:
+        return value.lower() if value is not None else None
 
     @model_validator(mode="after")
-    def validate_source(self) -> Self:
+    def validate_filters(self) -> Self:
         if self.source == "message" and self.artifact_name is not None:
             raise ValueError("artifact_name cannot be used with source: message")
+        integrity_fields = {
+            "size_bytes",
+            "min_size_bytes",
+            "max_size_bytes",
+            "sha256",
+        }
+        configured = self.model_fields_set & integrity_fields
+        if any(getattr(self, name) is None for name in configured):
+            raise ValueError("file content assertions cannot be null")
+        if configured and self.kind != "raw":
+            raise ValueError("file content assertions require kind: raw")
+        if self.size_bytes is not None and (
+            self.min_size_bytes is not None or self.max_size_bytes is not None
+        ):
+            raise ValueError("size_bytes cannot be combined with min_size_bytes or max_size_bytes")
+        if (
+            self.min_size_bytes is not None
+            and self.max_size_bytes is not None
+            and self.min_size_bytes > self.max_size_bytes
+        ):
+            raise ValueError("min_size_bytes cannot exceed max_size_bytes")
         return self
 
 
@@ -576,7 +613,7 @@ class Turn(StrictModel):
         max_length=MAX_INPUT_FILES,
         description="Local files sent as inline A2A raw parts.",
     )
-    action: Literal["cancel", "get_task", "await_push"] | None = Field(
+    action: Literal["cancel", "get_task", "subscribe", "await_push"] | None = Field(
         default=None,
         description="Task lifecycle or push-delivery operation using the preceding task ID.",
     )
@@ -968,6 +1005,12 @@ class FilePartResult(StrictModel):
     filename: Annotated[str, Field(max_length=1_000)] | None = None
     media_type: Annotated[str, Field(max_length=200)] | None = None
     size_bytes: int | None = Field(default=None, ge=0)
+    sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude=True,
+        repr=False,
+    )
     artifact_id: Annotated[str, Field(max_length=1_000)] | None = None
     artifact_name: Annotated[str, Field(max_length=200)] | None = None
 

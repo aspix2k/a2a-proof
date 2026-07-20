@@ -30,6 +30,7 @@ from a2a.types import (
     Role,
     SendMessageRequest,
     StreamResponse,
+    SubscribeToTaskRequest,
     Task,
     TaskArtifactUpdateEvent,
     TaskState,
@@ -90,6 +91,7 @@ class _FakeClient:
         self.closed = False
         self.cancel_request: CancelTaskRequest | None = None
         self.get_request: GetTaskRequest | None = None
+        self.subscribe_request: SubscribeToTaskRequest | None = None
         self.task_response = Task(
             id="task",
             context_id="context",
@@ -130,6 +132,17 @@ class _FakeClient:
         self.context = context
         return self.task_response
 
+    async def subscribe(
+        self,
+        request: SubscribeToTaskRequest,
+        *,
+        context: ClientCallContext | None = None,
+    ) -> AsyncIterator[StreamResponse]:
+        self.subscribe_request = request
+        self.context = context
+        for response in self.responses:
+            yield response
+
 
 class _ForcedTimeout:
     async def __aenter__(self) -> None:
@@ -151,6 +164,26 @@ def test_collects_direct_message() -> None:
     assert outcome.task_id is None
     assert outcome.duration_ms == 12
     assert outcome.states == ("message",)
+
+
+def test_collects_task_identity_from_direct_agent_message() -> None:
+    collector = ResponseCollector("initial")
+    collector.add(
+        StreamResponse(
+            message=Message(
+                message_id="message",
+                task_id="task",
+                context_id="context",
+                role=Role.ROLE_AGENT,
+                parts=[Part(text="Hello")],
+            )
+        )
+    )
+
+    outcome = collector.finish(duration_ms=1)
+
+    assert outcome.task_id == "task"
+    assert outcome.context_id == "context"
 
 
 def test_preserves_initial_ids_when_message_omits_them() -> None:
@@ -468,6 +501,9 @@ def test_collects_file_metadata_without_fetching_urls() -> None:
             "artifact_name": "generated report",
         },
     ]
+    digest = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    assert outcome.files[0].sha256 == digest
+    assert digest not in repr(outcome.files)
     assert "secret" not in repr(outcome.files)
 
 
@@ -1017,6 +1053,172 @@ async def test_session_runs_cancel_and_get_task_operations() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_id", "context_id", "error"),
+    [
+        ("other", "context", "changed the subscribed task ID"),
+        ("", "context", "changed the subscribed task ID"),
+        ("task", "other", "changed the subscribed task context"),
+        ("task", "", "changed the subscribed task context"),
+    ],
+)
+async def test_session_rejects_subscription_to_different_task_or_context(
+    task_id: str,
+    context_id: str,
+    error: str,
+) -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id=task_id,
+                    context_id=context_id,
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            )
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+
+    with pytest.raises(ProtocolError) as raised:
+        await session.subscribe_task(task_id="task", context_id="context")
+    assert str(raised.value) == f"agent response {error}"
+
+
+@pytest.mark.asyncio
+async def test_session_requires_subscription_task_snapshot_first() -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                status_update=TaskStatusUpdateEvent(
+                    task_id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            )
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+
+    with pytest.raises(ProtocolError, match="did not start with a task snapshot"):
+        await session.subscribe_task(task_id="task", context_id="context")
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_subscription_event_for_another_task() -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            ),
+            StreamResponse(
+                status_update=TaskStatusUpdateEvent(
+                    task_id="other",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+                )
+            ),
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+
+    with pytest.raises(ProtocolError, match="changed the subscribed task ID"):
+        await session.subscribe_task(task_id="task", context_id="context")
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_standalone_subscription_message() -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            ),
+            StreamResponse(
+                message=Message(
+                    message_id="message",
+                    task_id="task",
+                    context_id="context",
+                    role=Role.ROLE_USER,
+                    parts=[Part(text="ignored")],
+                )
+            ),
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+
+    with pytest.raises(ProtocolError, match="returned a standalone message"):
+        await session.subscribe_task(task_id="task", context_id="context")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message_task_id", "message_context_id", "error"),
+    [
+        ("other", "context", "agent response changed the subscribed task ID"),
+        ("task", "other", "agent response changed the subscribed task context"),
+    ],
+)
+async def test_session_rejects_foreign_task_history_message(
+    message_task_id: str,
+    message_context_id: str,
+    error: str,
+) -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                    history=[
+                        Message(
+                            message_id="foreign",
+                            task_id=message_task_id,
+                            context_id=message_context_id,
+                            role=Role.ROLE_USER,
+                            parts=[Part(text="ignored")],
+                        )
+                    ],
+                )
+            )
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+
+    with pytest.raises(ProtocolError) as raised:
+        await session.subscribe_task(task_id="task", context_id="context")
+    assert str(raised.value) == error
+
+
+@pytest.mark.asyncio
 async def test_session_reports_task_operation_timeouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1028,6 +1230,74 @@ async def test_session_reports_task_operation_timeouts(
         await session.cancel_task(task_id="task", context_id="context")
     with pytest.raises(ProtocolError, match="did not return task"):
         await session.get_task(task_id="task", context_id="context")
+
+
+@pytest.mark.asyncio
+async def test_session_subscribes_to_existing_task() -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            ),
+            StreamResponse(
+                status_update=TaskStatusUpdateEvent(
+                    task_id="task",
+                    context_id="context",
+                    status=TaskStatus(
+                        state=TaskState.TASK_STATE_COMPLETED,
+                        message=_agent_message("finished"),
+                    ),
+                )
+            ),
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    outcome = await session.subscribe_task(task_id="task", context_id="context")
+
+    assert outcome.state == "completed"
+    assert outcome.states == ("working", "completed")
+    assert outcome.text == "finished"
+    assert outcome.task_id == "task"
+    assert outcome.context_id == "context"
+    assert outcome.first_event_ms is not None
+    assert client.subscribe_request == SubscribeToTaskRequest(id="task")
+    assert client.context is not None
+    assert client.context.service_parameters == {"Authorization": "Bearer secret"}
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_subscribe_without_streaming_capability() -> None:
+    client = _FakeClient([])
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=2)
+
+    with pytest.raises(ProtocolError, match="does not advertise streaming"):
+        await session.subscribe_task(task_id="task", context_id="context")
+
+    assert client.subscribe_request is None
+
+
+@pytest.mark.asyncio
+async def test_session_reports_subscribe_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _FakeClient([])
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True)),
+        timeout=2,
+    )
+    monkeypatch.setattr(a2a_module.asyncio, "timeout", lambda seconds: _ForcedTimeout())
+
+    with pytest.raises(ProtocolError, match="did not finish subscribed task"):
+        await session.subscribe_task(task_id="task", context_id="context")
 
 
 @pytest.mark.asyncio

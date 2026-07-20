@@ -483,11 +483,17 @@ def test_validates_task_action_turns() -> None:
                 {"message": "Start", "return_immediately": True},
                 {"action": "cancel", "expect": {"state": "canceled"}},
                 {"action": "get_task", "history_length": 5},
+                {"action": "subscribe", "expect": {"state": "completed"}},
             ],
         }
     )
 
-    assert [turn.action for turn in scenario.resolved_turns()] == [None, "cancel", "get_task"]
+    assert [turn.action for turn in scenario.resolved_turns()] == [
+        None,
+        "cancel",
+        "get_task",
+        "subscribe",
+    ]
     assert scenario.resolved_turns()[2].history_length == 5
 
     with pytest.raises(ValueError, match="first turn cannot be a task action"):
@@ -498,6 +504,27 @@ def test_validates_task_action_turns() -> None:
         models_module.Turn(action="cancel", return_immediately=True)
     with pytest.raises(ValueError, match="history_length can only"):
         models_module.Turn(message="Start", history_length=1)
+
+
+def test_validates_file_content_assertions() -> None:
+    expectation = models_module.FileExpectation(
+        kind="raw",
+        min_size_bytes=10,
+        max_size_bytes=20,
+        sha256="A" * 64,
+    )
+
+    assert expectation.sha256 == "a" * 64
+    with pytest.raises(ValueError, match="require kind: raw"):
+        models_module.FileExpectation(sha256="a" * 64)
+    with pytest.raises(ValueError, match="require kind: raw"):
+        models_module.FileExpectation(kind="url", size_bytes=1)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        models_module.FileExpectation(kind="raw", size_bytes=1, min_size_bytes=1)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        models_module.FileExpectation(kind="raw", min_size_bytes=2, max_size_bytes=1)
+    with pytest.raises(ValueError, match="cannot be null"):
+        models_module.FileExpectation.model_validate({"kind": "raw", "sha256": None})
 
 
 def test_validates_push_notification_workflow() -> None:

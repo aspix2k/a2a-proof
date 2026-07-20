@@ -224,6 +224,16 @@ def _matches_file(expectation: FileExpectation, part: FilePartResult) -> bool:
         and (expectation.artifact_name is None or part.artifact_name == expectation.artifact_name)
         and (expectation.filename is None or part.filename == expectation.filename)
         and (expectation.kind is None or part.kind == expectation.kind)
+        and (expectation.size_bytes is None or part.size_bytes == expectation.size_bytes)
+        and (
+            expectation.min_size_bytes is None
+            or (part.size_bytes is not None and part.size_bytes >= expectation.min_size_bytes)
+        )
+        and (
+            expectation.max_size_bytes is None
+            or (part.size_bytes is not None and part.size_bytes <= expectation.max_size_bytes)
+        )
+        and (expectation.sha256 is None or part.sha256 == expectation.sha256)
         and (
             expectation.media_type is None
             or (
@@ -243,6 +253,10 @@ def _file_location(expectation: FileExpectation) -> str:
             ("filename", expectation.filename),
             ("media_type", expectation.media_type),
             ("kind", expectation.kind),
+            ("size_bytes", expectation.size_bytes),
+            ("min_size_bytes", expectation.min_size_bytes),
+            ("max_size_bytes", expectation.max_size_bytes),
+            ("sha256", expectation.sha256),
         )
         if value is not None
     ]

@@ -216,6 +216,7 @@ def test_matches_file_parts_by_metadata_and_exact_count() -> None:
             filename="progress.txt",
             media_type="text/plain",
             size_bytes=3,
+            sha256="a" * 64,
         ),
         FilePartResult(
             source="artifact",
@@ -235,6 +236,8 @@ def test_matches_file_parts_by_metadata_and_exact_count() -> None:
                 kind="url",
             ),
             FileExpectation(kind="raw", count=1),
+            FileExpectation(kind="raw", size_bytes=3, sha256="A" * 64),
+            FileExpectation(kind="raw", min_size_bytes=3, max_size_bytes=3),
             FileExpectation(media_type="image/png", count=0),
         ]
     )
@@ -248,6 +251,22 @@ def test_matches_file_parts_by_metadata_and_exact_count() -> None:
         Expectation(files=[FileExpectation(count=1)]),
         _outcome(files=files),
     ) == ["expected 1 file part(s) matching all file parts, got 2"]
+    assert evaluate(
+        Expectation(files=[FileExpectation(kind="raw", min_size_bytes=4)]),
+        _outcome(files=files),
+    ) == ["expected 1 file part(s) matching kind 'raw', min size bytes 4, got 0"]
+    assert evaluate(
+        Expectation(files=[FileExpectation(kind="raw", size_bytes=4)]),
+        _outcome(files=files),
+    ) == ["expected 1 file part(s) matching kind 'raw', size bytes 4, got 0"]
+    assert evaluate(
+        Expectation(files=[FileExpectation(kind="raw", max_size_bytes=2)]),
+        _outcome(files=files),
+    ) == ["expected 1 file part(s) matching kind 'raw', max size bytes 2, got 0"]
+    assert evaluate(
+        Expectation(files=[FileExpectation(kind="raw", sha256="b" * 64)]),
+        _outcome(files=files),
+    ) == [f"expected 1 file part(s) matching kind 'raw', sha256 {'b' * 64!r}, got 0"]
     assert evaluate(
         Expectation(
             files=[

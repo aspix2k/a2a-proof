@@ -23,9 +23,9 @@ AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-rece
 
 | Risk | Contract |
 | --- | --- |
-| A prompt, model, or backend change alters an answer | Text, structured data, JSON Schema, and file assertions |
+| A prompt, model, or backend change alters an answer | Text, structured data, JSON Schema, and file integrity assertions |
 | An LLM succeeds only some of the time or gets slower | Repeated trials, pass rates, parallel runs, and p50/p95 latency |
-| A long-running task breaks after acceptance | Multi-turn state trajectories, cancellation, persistence, and push delivery |
+| A long-running task breaks after acceptance | State trajectories, stream resumption, cancellation, persistence, and push delivery |
 | Staging no longer behaves like production | Agent Card preflight and deployment diff |
 | Agent text leaks a secret or system prompt | Global invariants and bounded failure evidence |
 | An agent produces an invalid payment proof | Signed AP2 mandate-chain and receipt verification |

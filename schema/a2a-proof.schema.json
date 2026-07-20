@@ -992,6 +992,62 @@
     },
     "FileExpectation": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "size_bytes"
+                ]
+              },
+              {
+                "required": [
+                  "min_size_bytes"
+                ]
+              },
+              {
+                "required": [
+                  "max_size_bytes"
+                ]
+              },
+              {
+                "required": [
+                  "sha256"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "raw"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "size_bytes",
+                  "min_size_bytes"
+                ]
+              },
+              {
+                "required": [
+                  "size_bytes",
+                  "max_size_bytes"
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "properties": {
         "artifact_name": {
           "anyOf": [
@@ -1045,6 +1101,12 @@
           "default": null,
           "title": "Kind"
         },
+        "max_size_bytes": {
+          "maximum": 20000000,
+          "minimum": 0,
+          "title": "Max Size Bytes",
+          "type": "integer"
+        },
         "media_type": {
           "anyOf": [
             {
@@ -1058,6 +1120,23 @@
           ],
           "default": null,
           "title": "Media Type"
+        },
+        "min_size_bytes": {
+          "maximum": 20000000,
+          "minimum": 0,
+          "title": "Min Size Bytes",
+          "type": "integer"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 20000000,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
         },
         "source": {
           "anyOf": [
@@ -1707,6 +1786,55 @@
                 "required": [
                   "history_length"
                 ]
+              },
+              {
+                "required": [
+                  "timeout_seconds"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "action": {
+              "const": "subscribe"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "message"
+                ]
+              },
+              {
+                "required": [
+                  "data"
+                ]
+              },
+              {
+                "required": [
+                  "files"
+                ]
+              },
+              {
+                "required": [
+                  "return_immediately"
+                ]
+              },
+              {
+                "required": [
+                  "push_notification"
+                ]
+              },
+              {
+                "required": [
+                  "history_length"
+                ]
               }
             ]
           },
@@ -1727,6 +1855,7 @@
               "enum": [
                 "cancel",
                 "get_task",
+                "subscribe",
                 "await_push"
               ],
               "type": "string"

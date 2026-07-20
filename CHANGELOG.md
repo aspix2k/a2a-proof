@@ -7,6 +7,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.13.0 - 2026-07-20
+
+### Security
+
+- Bound every task-subscription event to the task ID and context returned by the preceding turn.
+  A stream that crosses task or context boundaries now fails before its content reaches assertions,
+  reports, or evidence.
+- Kept file-content verification local and bounded. SHA-256 is computed only for inline raw parts;
+  remote URLs are never fetched, and computed digests and bytes are excluded from reports and
+  evidence.
+
+### Features
+
+- Added `action: subscribe` for black-box `SubscribeToTask` contracts. A scenario can accept an
+  active task, resume its stream, and apply existing state-trajectory, text, data, file, AP2,
+  timing, and invariant checks to the completed subscription result.
+- Required the subscription to start with the current task snapshot and finish in a terminal or
+  interrupted state, matching the A2A 1.0 lifecycle contract across JSON-RPC, HTTP+JSON, and gRPC.
+- Added exact `size_bytes`, inclusive `min_size_bytes` and `max_size_bytes`, and `sha256` assertions
+  for inline raw file parts. Exact size and range predicates are mutually exclusive, and content
+  checks explicitly require `kind: raw`.
+
+### Documentation
+
+- Added a focused stream-resumption contract to the lifecycle guide and documented file-integrity
+  syntax, validation rules, and the passive treatment of remote URL parts.
+- Updated the README capability map to surface stream resumption and file integrity without
+  expanding the onboarding path.
+
+### Maintenance
+
+- Added real JSON-RPC, HTTP+JSON, and gRPC subscription exchanges through the official A2A Python
+  SDK, including task continuity, artifact collection, terminal state, timing, and digest checks.
+- Extended runner, configuration, generated schema, protocol rejection, serialization, and
+  assertion coverage while retaining the 99% coverage gate.
+- Established a clean mutation baseline: 4,406 of 4,579 mutants are killed (96.22%), with no
+  survivors in the v0.13 subscription or file-integrity paths. The three timeouts remain in the
+  bounded push receiver's listener and socket-read mutations.
+
 ## 0.12.0 - 2026-07-20
 
 ### Features
