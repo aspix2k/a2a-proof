@@ -1169,6 +1169,45 @@
       "title": "LatencyExpectation",
       "type": "object"
     },
+    "PushNotificationsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "listen_host": {
+          "default": "127.0.0.1",
+          "description": "Literal IP address for the local webhook listener.",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Listen Host",
+          "type": "string"
+        },
+        "listen_port": {
+          "default": 0,
+          "description": "Local listener port; zero selects an available port.",
+          "maximum": 65535,
+          "minimum": 0,
+          "title": "Listen Port",
+          "type": "integer"
+        },
+        "public_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Externally reachable base URL; local listener URL by default.",
+          "title": "Public Url"
+        }
+      },
+      "title": "PushNotificationsConfig",
+      "type": "object"
+    },
     "Scenario": {
       "additionalProperties": false,
       "properties": {
@@ -1482,6 +1521,30 @@
       "additionalProperties": false,
       "oneOf": [
         {
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "push_notification": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "push_notification"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "return_immediately": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "return_immediately"
+                ]
+              }
+            }
+          ],
           "anyOf": [
             {
               "required": [
@@ -1509,6 +1572,11 @@
               {
                 "required": [
                   "history_length"
+                ]
+              },
+              {
+                "required": [
+                  "timeout_seconds"
                 ]
               }
             ]
@@ -1539,7 +1607,17 @@
               },
               {
                 "required": [
+                  "push_notification"
+                ]
+              },
+              {
+                "required": [
                   "history_length"
+                ]
+              },
+              {
+                "required": [
+                  "timeout_seconds"
                 ]
               }
             ]
@@ -1575,12 +1653,66 @@
                 "required": [
                   "return_immediately"
                 ]
+              },
+              {
+                "required": [
+                  "push_notification"
+                ]
+              },
+              {
+                "required": [
+                  "timeout_seconds"
+                ]
               }
             ]
           },
           "properties": {
             "action": {
               "const": "get_task"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "message"
+                ]
+              },
+              {
+                "required": [
+                  "data"
+                ]
+              },
+              {
+                "required": [
+                  "files"
+                ]
+              },
+              {
+                "required": [
+                  "return_immediately"
+                ]
+              },
+              {
+                "required": [
+                  "push_notification"
+                ]
+              },
+              {
+                "required": [
+                  "history_length"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "action": {
+              "const": "await_push"
             }
           },
           "required": [
@@ -1594,7 +1726,8 @@
             {
               "enum": [
                 "cancel",
-                "get_task"
+                "get_task",
+                "await_push"
               ],
               "type": "string"
             },
@@ -1603,7 +1736,7 @@
             }
           ],
           "default": null,
-          "description": "Task lifecycle operation using the preceding task ID.",
+          "description": "Task lifecycle or push-delivery operation using the preceding task ID.",
           "title": "Action"
         },
         "data": {
@@ -1667,11 +1800,32 @@
           "description": "Text sent to the agent.",
           "title": "Message"
         },
+        "push_notification": {
+          "default": false,
+          "description": "Register a single-use push callback with this input turn.",
+          "title": "Push Notification",
+          "type": "boolean"
+        },
         "return_immediately": {
           "default": false,
           "description": "Ask the agent to return the initial task state without waiting.",
           "title": "Return Immediately",
           "type": "boolean"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 600,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum wait for an await_push action.",
+          "title": "Timeout Seconds"
         }
       },
       "title": "Turn",
@@ -1714,6 +1868,18 @@
       ],
       "default": null,
       "description": "Checks applied to every response turn."
+    },
+    "push_notifications": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PushNotificationsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Local receiver settings for push-notification scenarios."
     },
     "scenarios": {
       "description": "Behavior contracts to run.",

@@ -13,6 +13,11 @@ import httpx
 import pytest
 import respx
 from a2a.helpers import get_data_parts
+from a2a.server.context import ServerCallContext
+from a2a.server.tasks.base_push_notification_sender import BasePushNotificationSender
+from a2a.server.tasks.inmemory_push_notification_config_store import (
+    InMemoryPushNotificationConfigStore,
+)
 from a2a.types import (
     CancelTaskRequest,
     GetTaskRequest,
@@ -22,14 +27,17 @@ from a2a.types import (
     SendMessageRequest,
     SendMessageResponse,
     Task,
+    TaskPushNotificationConfig,
     TaskState,
     TaskStatus,
+    TaskStatusUpdateEvent,
     a2a_pb2_grpc,
 )
 from click.testing import CliRunner
 
 from a2a_proof.cli import main
-from a2a_proof.models import ProofConfig
+from a2a_proof.models import ProofConfig, PushNotificationsConfig
+from a2a_proof.push import PushReceiver
 from a2a_proof.runner import run
 
 TEST_EXTENSION = "https://example.com/extensions/structured-input/v1"
@@ -71,6 +79,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 ],
                 "capabilities": {
                     "streaming": False,
+                    "pushNotifications": True,
                     "extensions": [{"uri": TEST_EXTENSION}],
                 },
                 "defaultInputModes": ["text/plain", "application/json", "application/pdf"],
@@ -105,6 +114,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
             )
             return
         payload = request["params"] if self.path == "/a2a" else request
+        push_config = payload.get("configuration", {}).get("taskPushNotificationConfig")
         message = payload["message"]
         text = "".join(part.get("text", "") for part in message["parts"])
         data = [part["data"] for part in message["parts"] if "data" in part]
@@ -177,6 +187,22 @@ class _AgentHandler(BaseHTTPRequestHandler):
         if self.path == "/a2a":
             result = {"jsonrpc": "2.0", "id": request["id"], "result": result}
         self._send_json(200, result)
+        if push_config is not None:
+            authentication = push_config["authentication"]
+            response = httpx.post(
+                push_config["url"],
+                headers={
+                    "Authorization": (f"{authentication['scheme']} {authentication['credentials']}")
+                },
+                json={
+                    "statusUpdate": {
+                        "taskId": "task",
+                        "contextId": "context",
+                        "status": {"state": "TASK_STATE_COMPLETED"},
+                    }
+                },
+            )
+            response.raise_for_status()
 
     def _task(self) -> dict[str, object]:
         state = getattr(self.server, "task_state", "TASK_STATE_WORKING")
@@ -361,6 +387,71 @@ async def test_runs_task_lifecycle_contract_over_real_http_transports(
     )
 
     assert (await run(config)).passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["JSONRPC", "HTTP+JSON"])
+async def test_runs_push_contract_over_real_http_transports(
+    agent_url: str,
+    transport: str,
+) -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": agent_url, "transport": transport},
+            "push_notifications": {},
+            "scenarios": [
+                {
+                    "name": "async completion",
+                    "turns": [
+                        {
+                            "message": "Start a long task",
+                            "return_immediately": True,
+                            "push_notification": True,
+                            "expect": {"state": "working"},
+                        },
+                        {
+                            "action": "await_push",
+                            "expect": {"state": "completed"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    result = await run(config)
+
+    assert result.passed
+    assert result.scenarios[0].trials[0].turns[1].state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_accepts_notifications_from_official_sdk_sender() -> None:
+    async with PushReceiver(PushNotificationsConfig()) as receiver:
+        subscription = receiver.register()
+        subscription.bind(task_id="task", context_id="context")
+        store = InMemoryPushNotificationConfigStore(owner_resolver=lambda _context: "owner")
+        await store.set_info(
+            "task",
+            TaskPushNotificationConfig(
+                task_id="task",
+                url=subscription.target.url,
+                token=subscription.target.token,
+            ),
+            cast(ServerCallContext, object()),
+        )
+        async with httpx.AsyncClient() as client:
+            sender = BasePushNotificationSender(client, store)
+            await sender.send_notification(
+                "task",
+                TaskStatusUpdateEvent(
+                    task_id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+                ),
+            )
+        assert (await subscription.wait(1)).state == "completed"
 
 
 @pytest.mark.asyncio

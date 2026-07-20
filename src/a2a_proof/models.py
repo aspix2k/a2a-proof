@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from ipaddress import ip_address
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Self
 
@@ -575,9 +576,9 @@ class Turn(StrictModel):
         max_length=MAX_INPUT_FILES,
         description="Local files sent as inline A2A raw parts.",
     )
-    action: Literal["cancel", "get_task"] | None = Field(
+    action: Literal["cancel", "get_task", "await_push"] | None = Field(
         default=None,
-        description="Task lifecycle operation using the preceding task ID.",
+        description="Task lifecycle or push-delivery operation using the preceding task ID.",
     )
     return_immediately: bool = Field(
         default=False,
@@ -588,6 +589,16 @@ class Turn(StrictModel):
         ge=0,
         le=1_000,
         description="Task history entries requested by a get_task action.",
+    )
+    push_notification: bool = Field(
+        default=False,
+        description="Register a single-use push callback with this input turn.",
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        le=600,
+        description="Maximum wait for an await_push action.",
     )
     expect: Expectation = Field(default_factory=Expectation, description="Expected response.")
 
@@ -617,6 +628,13 @@ class Turn(StrictModel):
             raise ValueError("return_immediately can only be used with an input turn")
         if "history_length" in self.model_fields_set and self.action != "get_task":
             raise ValueError("history_length can only be used with action: get_task")
+        if "push_notification" in self.model_fields_set:
+            if self.action is not None:
+                raise ValueError("push_notification can only be used with an input turn")
+            if self.push_notification and not self.return_immediately:
+                raise ValueError("push_notification requires return_immediately: true")
+        if "timeout_seconds" in self.model_fields_set and self.action != "await_push":
+            raise ValueError("timeout_seconds can only be used with action: await_push")
         return self
 
 
@@ -707,6 +725,18 @@ class Scenario(StrictModel):
             raise ValueError("put expect on each turn when using turns")
         if self.turns is not None and self.turns[0].action is not None:
             raise ValueError("the first turn cannot be a task action")
+        if self.turns is not None:
+            for index, turn in enumerate(self.turns):
+                if turn.push_notification:
+                    next_turn = self.turns[index + 1] if index + 1 < len(self.turns) else None
+                    if next_turn is None or next_turn.action != "await_push":
+                        raise ValueError(
+                            "a push_notification turn must be followed by action: await_push"
+                        )
+                if turn.action == "await_push":
+                    previous = self.turns[index - 1] if index > 0 else None
+                    if previous is None or not previous.push_notification:
+                        raise ValueError("action: await_push must follow a push_notification turn")
         return self
 
     def resolved_turns(self) -> list[Turn]:
@@ -723,6 +753,51 @@ class ScenarioDefaults(StrictModel):
         le=1,
         description="Default minimum successful trial fraction.",
     )
+
+
+class PushNotificationsConfig(StrictModel):
+    listen_host: str = Field(
+        default="127.0.0.1",
+        min_length=1,
+        max_length=64,
+        description="Literal IP address for the local webhook listener.",
+    )
+    listen_port: int = Field(
+        default=0,
+        ge=0,
+        le=65_535,
+        description="Local listener port; zero selects an available port.",
+    )
+    public_url: HttpUrl | None = Field(
+        default=None,
+        description="Externally reachable base URL; local listener URL by default.",
+    )
+
+    @field_validator("listen_host")
+    @classmethod
+    def validate_listen_host(cls, host: str) -> str:
+        address = ip_address(host)
+        if address.is_multicast:
+            raise ValueError("listen_host cannot be multicast")
+        return address.compressed
+
+    @model_validator(mode="after")
+    def validate_public_url(self) -> Self:
+        listen_address = ip_address(self.listen_host)
+        if self.public_url is None:
+            if listen_address.is_unspecified or not _is_local_http_host(self.listen_host):
+                raise ValueError("public_url is required for a non-local listen_host")
+            return self
+        url = self.public_url
+        if url.username is not None or url.password is not None:
+            raise ValueError("public_url must not contain credentials")
+        if url.query is not None or url.fragment is not None:
+            raise ValueError("public_url must not contain a query or fragment")
+        if url.host is None:
+            raise ValueError("public_url must contain a host")
+        if url.scheme == "http" and not _is_local_http_host(url.host):
+            raise ValueError("non-local public_url must use HTTPS")
+        return self
 
 
 class AgentConfig(StrictModel):
@@ -806,6 +881,10 @@ class ProofConfig(StrictModel):
         default_factory=ScenarioDefaults,
         description="Defaults applied to scenarios that omit these fields.",
     )
+    push_notifications: PushNotificationsConfig | None = Field(
+        default=None,
+        description="Local receiver settings for push-notification scenarios.",
+    )
     scenarios: Annotated[
         list[Scenario],
         Field(min_length=1, max_length=1_000, description="Behavior contracts to run."),
@@ -827,6 +906,20 @@ class ProofConfig(StrictModel):
             names = ", ".join(sorted(duplicates))
             raise ValueError(f"scenario names must be unique: {names}")
         return scenarios
+
+    @model_validator(mode="after")
+    def require_push_receiver(self) -> Self:
+        if self.uses_push_notifications and self.push_notifications is None:
+            raise ValueError("push_notifications settings are required for push scenarios")
+        return self
+
+    @property
+    def uses_push_notifications(self) -> bool:
+        return any(
+            turn.push_notification
+            for scenario in self.scenarios
+            for turn in scenario.resolved_turns()
+        )
 
     @property
     def contract_dir(self) -> Path:
@@ -943,6 +1036,16 @@ class DiffResult(StrictModel):
     baseline: SuiteResult
     candidate: SuiteResult
     checks: list[DiffCheck]
+
+
+def _is_local_http_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
 
 
 def _validate_input_data_size(data: list[JsonValue]) -> None:

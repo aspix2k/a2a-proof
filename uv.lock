@@ -9,11 +9,12 @@ resolution-markers = [
 
 [[package]]
 name = "a2a-proof"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["grpc"] },
     { name = "click" },
+    { name = "h11" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "pydantic" },
@@ -39,6 +40,7 @@ dev = [
 requires-dist = [
     { name = "a2a-sdk", extras = ["grpc"], specifier = ">=1.1.1,<2" },
     { name = "click", specifier = ">=8.4.2,<9" },
+    { name = "h11", specifier = ">=0.16,<1" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "pydantic", specifier = ">=2.12.5,<3" },

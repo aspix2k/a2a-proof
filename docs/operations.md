@@ -55,6 +55,12 @@ activates them on every transport. `init` adds required extensions automatically
 Extension activation is transport-level. AP2 mandate semantics require the optional setup in
 [AP2 contracts](ap2.md).
 
+## Push callback networking
+
+The built-in push receiver listens on loopback by default. Remote agents need a public HTTPS route
+to a fixed local port; configuration, authentication, limits, and failure behavior are covered in
+[Push notification contracts](push-notifications.md).
+
 ## Evidence
 
 `--evidence DIR` writes `manifest.json` and `failures.jsonl` through an atomic directory rename and
@@ -80,6 +86,8 @@ expressions have a 100 ms evaluation limit, redirects are disabled, and evidence
 
 The repository includes a contract for the A2A project's
 [Hello World agent](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents/helloworld):
+
+Start the sample agent on `127.0.0.1:9999` using its upstream instructions, then run:
 
 ```console
 uv run a2a-proof run examples/official-helloworld.yaml

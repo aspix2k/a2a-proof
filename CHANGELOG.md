@@ -7,6 +7,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.11.0 - 2026-07-20
+
+### Security
+
+- Added an authenticated, bounded push callback receiver with a unique route and high-entropy token
+  for every trial. It accepts standard Bearer authentication plus the legacy token header emitted
+  by A2A Python SDK 1.1.1. Accepted events are bound to the task and context returned by the initial
+  A2A request, exact retries are deduplicated, and public callback URLs require HTTPS. Plain HTTP is
+  limited to loopback and private-network hosts.
+- Limited callback concurrency, active subscriptions, request and aggregate body sizes, event
+  counts, path length, and connection lifetime. Malformed requests, ambiguous headers, unsupported
+  media types, and unknown protobuf fields are rejected before evaluation.
+
+### Bug fixes
+
+- Rejected callbacks that omit the expected context ID, and canceled active connection handlers
+  when the receiver closes so no accepted request outlives the run.
+- Closed a newly registered callback subscription when message sending, file preparation, task-ID
+  validation, or binding fails, preventing failed trials from consuming the run-wide subscription
+  limit.
+- Started the `await_push` timeout when the wait action begins instead of when the callback was
+  registered, and surfaced authenticated invalid deliveries immediately instead of waiting for a
+  timeout.
+
+### Features
+
+- Added black-box push delivery contracts. A turn can register an inline A2A push configuration,
+  return its task immediately, and use `action: await_push` to assert the state trajectory, text,
+  structured data, files, timing, AP2 proofs, and global invariants of the delivered events.
+- Added a loopback callback listener for local agents and explicit `listen_host`, `listen_port`, and
+  `public_url` settings for remote agents behind an HTTPS reverse proxy or tunnel.
+
+### Documentation
+
+- Replaced the README's toy capital-city example with a realistic structured routing contract and
+  a compact risk-to-capability map covering behavioral drift, nondeterminism, lifecycle, deployment
+  comparison, leak detection, and AP2 verification.
+- Added a focused push notification guide covering local and remote setup, callback routing,
+  authentication, lifecycle rules, bounds, and failure behavior without expanding the README into
+  a reference manual.
+
+### Maintenance
+
+- Added real JSON-RPC and HTTP+JSON push exchanges plus an interoperability test that delivers an
+  event through the official A2A Python SDK sender. Extended configuration, protocol rejection,
+  cleanup, schema, and runner coverage while retaining the 99% coverage gate.
+- Added the lightweight HTTP/1.1 parser as a direct dependency and included the callback receiver
+  in deterministic mutation testing.
+
 ## 0.10.0 - 2026-07-20
 
 ### Security

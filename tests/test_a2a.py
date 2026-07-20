@@ -51,6 +51,7 @@ from a2a_proof.a2a import (
 from a2a_proof.files import PreparedFile
 from a2a_proof.models import AgentConfig
 from a2a_proof.protocol import ProtocolError, ResponseCollector
+from a2a_proof.push import PushTarget
 
 
 def _agent_message(text: str, *, message_id: str = "message") -> Message:
@@ -919,6 +920,71 @@ async def test_session_uses_non_streaming_client_for_immediate_task() -> None:
     assert streaming_client.request is None
     assert lifecycle_client.request is not None
     assert lifecycle_client.request.configuration.return_immediately
+
+
+@pytest.mark.asyncio
+async def test_session_registers_inline_push_notification() -> None:
+    client = _FakeClient(
+        [
+            StreamResponse(
+                task=Task(
+                    id="task",
+                    context_id="context",
+                    status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+                )
+            )
+        ]
+    )
+    session = A2ASession(
+        cast(Client, client),
+        AgentCard(
+            name="Agent",
+            capabilities=AgentCapabilities(push_notifications=True),
+        ),
+        timeout=2,
+    )
+
+    await session.send_turn(
+        "Start",
+        context_id="context",
+        task_id=None,
+        return_immediately=True,
+        push_notification=PushTarget(
+            url="https://hooks.example/.a2a-proof/push/route",
+            token="secret-token",
+        ),
+    )
+
+    assert client.request is not None
+    configuration = client.request.configuration
+    assert configuration.return_immediately
+    assert configuration.task_push_notification_config.url == (
+        "https://hooks.example/.a2a-proof/push/route"
+    )
+    assert configuration.task_push_notification_config.token == "secret-token"
+    assert configuration.task_push_notification_config.task_id == ""
+    assert configuration.task_push_notification_config.authentication.scheme == "Bearer"
+    assert configuration.task_push_notification_config.authentication.credentials == "secret-token"
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_push_when_card_does_not_advertise_it() -> None:
+    client = _FakeClient([])
+    session = A2ASession(cast(Client, client), AgentCard(name="Agent"), timeout=2)
+
+    with pytest.raises(ProtocolError, match="does not advertise push notifications"):
+        await session.send_turn(
+            "Start",
+            context_id="context",
+            task_id=None,
+            return_immediately=True,
+            push_notification=PushTarget(
+                url="https://hooks.example/.a2a-proof/push/route",
+                token="secret-token",
+            ),
+        )
+
+    assert client.request is None
 
 
 @pytest.mark.asyncio
