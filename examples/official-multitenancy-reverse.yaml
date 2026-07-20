@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json
+
+version: 1
+
+agent:
+  url: http://127.0.0.1:18133/reverse
+  timeout: 10
+
+card:
+  skills: {contains: reverse}
+  capabilities: {streaming: true}
+
+scenarios:
+  - name: reverse words on the routed agent
+    message: agents talking to agents
+    expect:
+      state: completed
+      states: {contains_in_order: [submitted, working, completed]}
+      text: {contains: "Reversed: agents to talking agents"}

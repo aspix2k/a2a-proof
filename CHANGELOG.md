@@ -7,6 +7,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.12.0 - 2026-07-20
+
+### Features
+
+- Added `--transport` to `run` and `diff`, allowing one contract to exercise JSON-RPC, HTTP+JSON,
+  and gRPC without editing or duplicating its YAML. Evidence manifests record the requested
+  transport mode, including `auto`.
+
+### Documentation
+
+- Added concise, reproducible showcases for the official Python, Go, and Rust SDK agents plus an
+  independent Turul multi-turn agent. The examples cover routed discovery, all three A2A bindings,
+  task cancellation, and same-task `input_required` continuation.
+- Updated the project comparison to distinguish application behavior contracts from the official
+  A2A ITK's SDK interoperability matrix.
+
+### Maintenance
+
+- Validate every checked-in example configuration offline in CI. Live upstream agents remain
+  opt-in so external networks, compilers, and repository drift cannot make normal builds flaky.
+- Established a clean mutation baseline: 4,234 of 4,406 mutants are killed (96.10%), with no
+  uncovered, suspicious, skipped, interrupted, or crashed mutations. The four timeouts are known
+  bounded-concurrency and socket-read mutations.
+
 ## 0.11.0 - 2026-07-20
 
 ### Security

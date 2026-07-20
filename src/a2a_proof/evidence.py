@@ -82,6 +82,7 @@ def write_evidence(
             "execution": {
                 "scenarios": redactor.redact([scenario.name for scenario in config.scenarios]),
                 "max_parallel_trials": max_parallel_trials,
+                "transport": config.agent.transport,
             },
             "passed": result.passed,
             "duration_ms": result.duration_ms,

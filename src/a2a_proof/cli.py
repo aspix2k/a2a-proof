@@ -44,6 +44,7 @@ from a2a_proof.runner import run
 DEFAULT_CONFIG = Path("a2a-proof.yaml")
 MAX_GENERATED_SCENARIOS = 20
 MAX_GENERATED_MESSAGE_CHARS = 100_000
+TRANSPORT_CHOICES = ("auto", "JSONRPC", "HTTP+JSON", "GRPC")
 
 
 class ProofCommandError(click.ClickException):
@@ -338,6 +339,11 @@ def check_command(config_path: Path) -> None:
     metavar="NAME",
     help="Run only this scenario. Repeat to select more than one.",
 )
+@click.option(
+    "--transport",
+    type=click.Choice(TRANSPORT_CHOICES),
+    help="Override the configured transport for this run.",
+)
 def run_command(
     config_path: Path,
     output_format: str,
@@ -346,12 +352,14 @@ def run_command(
     jobs: int,
     verbose: bool,
     scenario_names: tuple[str, ...],
+    transport: str | None,
 ) -> None:
     """Run the configured scenarios against the agent."""
     if output is not None and output_format == "terminal":
         raise click.UsageError("--output requires --format json or junit")
     try:
         config = load_config(config_path)
+        config = _with_transport(config, transport)
         if scenario_names:
             config = config.model_copy(
                 update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
@@ -408,6 +416,11 @@ def run_command(
     metavar="NAME",
     help="Compare only this scenario. Repeat to select more than one.",
 )
+@click.option(
+    "--transport",
+    type=click.Choice(TRANSPORT_CHOICES),
+    help="Override the configured transport for both deployments.",
+)
 def diff_command(
     config_path: Path,
     against: str,
@@ -415,12 +428,14 @@ def diff_command(
     output: Path | None,
     jobs: int,
     scenario_names: tuple[str, ...],
+    transport: str | None,
 ) -> None:
     """Compare one contract against baseline and candidate agents."""
     if output is not None and output_format == "terminal":
         raise click.UsageError("--output requires --format json")
     try:
         config = load_config(config_path)
+        config = _with_transport(config, transport)
         if scenario_names:
             config = config.model_copy(
                 update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
@@ -464,6 +479,13 @@ async def _run_pair(
     baseline_result = await run(baseline, max_parallel_trials=max_parallel_trials)
     candidate_result = await run(candidate, max_parallel_trials=max_parallel_trials)
     return baseline_result, candidate_result
+
+
+def _with_transport(config: ProofConfig, transport: str | None) -> ProofConfig:
+    if transport is None:
+        return config
+    agent = AgentConfig.model_validate({**config.agent.model_dump(), "transport": transport})
+    return config.model_copy(update={"agent": agent})
 
 
 def _header_environment(values: tuple[str, ...]) -> tuple[dict[str, str], dict[str, str]]:

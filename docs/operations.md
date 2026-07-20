@@ -5,6 +5,7 @@
 ```console
 a2a-proof check [CONFIG]
 a2a-proof run [CONFIG]
+a2a-proof run --transport GRPC
 a2a-proof run --scenario smoke --jobs 4
 a2a-proof run --format json
 a2a-proof run --format junit --output a2a-proof.xml
@@ -38,6 +39,9 @@ The generated file stores `${A2A_AUTHORIZATION}`, not its value.
 The default `auto` mode lets the Agent Card select JSON-RPC, HTTP+JSON, or gRPC. Set `transport` to
 `JSONRPC`, `HTTP+JSON`, or `GRPC` to require one binding. gRPC uses TLS by default; set
 `grpc_tls: false` only for a trusted plaintext endpoint such as a local test server.
+
+`run --transport` and `diff --transport` override that setting for one invocation without changing
+the contract. Evidence manifests record the requested transport mode, including `auto`.
 
 Interfaces must share the discovery URL's origin unless `allow_cross_origin_interfaces: true` is
 set. Request headers are sent to an allowed cross-origin interface, so enable it only for a trusted
@@ -81,14 +85,3 @@ data, and 20 MB of inline raw data.
 Embedded schemas are limited to 100 KB and 50 levels. Request timeouts are configurable, regular
 expressions have a 100 ms evaluation limit, redirects are disabled, and evidence records at most
 100 failed trials with bounded previews.
-
-## Official sample
-
-The repository includes a contract for the A2A project's
-[Hello World agent](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents/helloworld):
-
-Start the sample agent on `127.0.0.1:9999` using its upstream instructions, then run:
-
-```console
-uv run a2a-proof run examples/official-helloworld.yaml
-```
