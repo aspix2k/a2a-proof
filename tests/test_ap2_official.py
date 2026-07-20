@@ -6,8 +6,10 @@ from importlib import import_module
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
-from a2a_proof.ap2 import evaluate_ap2
+from a2a_proof.ap2 import AP2VerificationError, evaluate_ap2, inspect_ap2
+from a2a_proof.cli import main
 from a2a_proof.models import AP2MandateExpectation, DataPartResult
 
 
@@ -66,6 +68,15 @@ def test_official_ap2_v020_payment_and_checkout_chains(tmp_path: Path) -> None:
     )
 
     assert evaluate_ap2([payment_expectation], (payment_part,), tmp_path) == []
+    payment_inspection = inspect_ap2(
+        payment_chain,
+        trusted_root,
+        "merchant",
+        "payment-nonce",
+        transaction_id="checkout-hash",
+    )
+    assert payment_inspection.type == "payment"
+    assert payment_inspection.details["payee"] == {"id": "shop-1", "name": "Shop"}
 
     tampered = f"{payment_chain[:-1]}{'A' if payment_chain[-1] != 'A' else 'B'}"
     tampered_part = payment_part.model_copy(
@@ -74,6 +85,8 @@ def test_official_ap2_v020_payment_and_checkout_chains(tmp_path: Path) -> None:
     assert evaluate_ap2([payment_expectation], (tampered_part,), tmp_path)[0].startswith(
         "AP2 payment mandate verification failed:"
     )
+    with pytest.raises(AP2VerificationError, match="failed signature"):
+        inspect_ap2(tampered, trusted_root, "merchant", "payment-nonce")
 
     checkout_payload = {
         "id": "checkout-1",
@@ -116,3 +129,39 @@ def test_official_ap2_v020_payment_and_checkout_chains(tmp_path: Path) -> None:
     )
 
     assert evaluate_ap2([checkout_expectation], (checkout_part,), tmp_path) == []
+    checkout_inspection = inspect_ap2(
+        checkout_chain,
+        trusted_root,
+        "merchant",
+        "checkout-nonce",
+        checkout_hash=checkout_hash,
+    )
+    assert checkout_inspection.type == "checkout"
+    assert checkout_inspection.details["checkout"]["id"] == "checkout-1"
+
+
+def test_documented_ap2_inspector_example() -> None:
+    pytest.importorskip("ap2.sdk.mandate")
+    root = Path(__file__).parents[1]
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect",
+            str(root / "examples/ap2/payment-mandate.txt"),
+            "--trust-root",
+            str(root / "examples/ap2/payment-root.jwk"),
+            "--audience",
+            "merchant.example",
+            "--nonce",
+            "demo-payment-nonce",
+            "--transaction-id",
+            "demo-checkout-hash",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "AP2 PAYMENT — VALID" in result.output
+    assert "Demo Shop (demo-shop)" in result.output
+    assert "1999 USD" in result.output

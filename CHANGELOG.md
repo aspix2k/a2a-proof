@@ -7,6 +7,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.9.0 - 2026-07-20
+
+### Security
+
+- Added offline AP2 mandate inspection without accepting tokens as command-line values. Tokens are
+  read from a bounded file or standard input, never echoed, and omitted from success and failure
+  output.
+- Rendered verified mandate fields as literal, bounded text so terminal control characters and
+  Rich markup cannot alter inspector output. Trust roots remain local public P-256 JWKs; remote key
+  discovery and private JWK material remain rejected.
+- Split invalid mandates from setup failures: cryptographic, delegation, audience, nonce, validity,
+  schema, constraint, and checkout-binding failures return exit code `1`; input, key, and missing
+  SDK errors return `2`.
+
+### Features
+
+- Added `a2a-proof ap2 inspect` with automatic payment or checkout type detection, optional
+  type-specific expected bindings, concise terminal output, and stable JSON output.
+- Added verified summaries for payment payee, amount, transaction, and instrument type, plus
+  checkout merchant, status, currency, item count, and signed checkout hash. Raw mandate tokens and
+  payment instrument identifiers are not reported.
+
+### Documentation
+
+- Added a copyable inspector walkthrough with the exact terminal result, stdin usage, JSON mode,
+  and exit-code contract while keeping AP2 reference material outside the README.
+
+### Maintenance
+
+- Added a synthetic signed AP2 payment fixture whose private demo keys were discarded. CI verifies
+  the documented command against the pinned official AP2 v0.2.0 SDK.
+- Extended official integration coverage to inspect real payment and checkout chains and reject a
+  tampered signature through the same verifier used by response contracts.
+- Strengthened AP2 and cross-module contract tests; a clean full mutation run now kills 3,108 of
+  3,138 mutants (99.04%) with no uncovered, suspicious, timed-out, or crashed mutations.
+
 ## 0.8.0 - 2026-07-19
 
 ### Security

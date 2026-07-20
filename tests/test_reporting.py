@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 
 from rich.console import Console
 
+from a2a_proof.ap2 import AP2Inspection
 from a2a_proof.models import (
     CardResult,
     DiffCheck,
@@ -17,6 +19,10 @@ from a2a_proof.models import (
 from a2a_proof.reporting import (
     _diagnostic,
     _duration,
+    render_ap2_invalid,
+    render_ap2_invalid_json,
+    render_ap2_json,
+    render_ap2_terminal,
     render_diff_json,
     render_diff_terminal,
     render_json,
@@ -43,6 +49,78 @@ def _result(*, passed: bool) -> SuiteResult:
         trials=[trial],
     )
     return SuiteResult(passed=passed, duration_ms=5, scenarios=[scenario])
+
+
+def test_renders_ap2_payment_in_terminal_and_json() -> None:
+    result = AP2Inspection(
+        type="payment",
+        chain_length=2,
+        audience="merchant\x1b[31m",
+        checks=("signature", "nonce"),
+        details={
+            "transaction_id": "checkout-[red]hash",
+            "payee": {"id": "shop-1", "name": "[red]Shop"},
+            "amount": {"minor_units": 1_000, "currency": "USD"},
+            "payment_instrument_type": "card",
+        },
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_ap2_terminal(result, console)
+
+    output = console.export_text()
+    assert "AP2 PAYMENT — VALID" in output
+    assert "[red]Shop (shop-1)" in output
+    assert "checkout-[red]hash" in output
+    assert "\x1b" not in output
+    assert json.loads(render_ap2_json(result))["details"]["transaction_id"] == (
+        "checkout-[red]hash"
+    )
+
+
+def test_renders_ap2_checkout_without_merchant() -> None:
+    result = AP2Inspection(
+        type="checkout",
+        chain_length=2,
+        audience="merchant",
+        checks=("signature", "checkout_hash_binding"),
+        details={
+            "checkout_hash": "hash",
+            "checkout": {
+                "id": "checkout-1",
+                "merchant": None,
+                "status": "completed",
+                "currency": "USD",
+                "line_items": 2,
+            },
+        },
+    )
+    console = Console(record=True, color_system=None, width=100)
+
+    render_ap2_terminal(result, console)
+
+    output = console.export_text()
+    assert "AP2 CHECKOUT — VALID" in output
+    assert "checkout-1" in output
+    assert "Merchant" not in output
+    assert "2" in output
+
+    result.details["checkout"]["merchant"] = {"id": "shop-1", "name": "Shop"}
+    merchant_console = Console(record=True, color_system=None, width=100)
+    render_ap2_terminal(result, merchant_console)
+    assert "Shop (shop-1)" in merchant_console.export_text()
+
+
+def test_renders_ap2_invalid_without_control_characters() -> None:
+    console = Console(record=True, color_system=None, width=100)
+
+    render_ap2_invalid("bad\x1b[31m signature", console)
+
+    assert console.export_text() == "AP2 MANDATE — INVALID\nReason: bad[31m signature\n"
+    assert json.loads(render_ap2_invalid_json("bad\x1b[31m signature")) == {
+        "valid": False,
+        "error": "bad[31m signature",
+    }
 
 
 def test_renders_terminal_without_control_characters() -> None:

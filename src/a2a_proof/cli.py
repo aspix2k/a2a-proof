@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Literal
 
 import click
 from a2a.client.errors import A2AClientError
@@ -12,12 +12,22 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from a2a_proof.a2a import discover_agent
-from a2a_proof.ap2 import AP2Error, ensure_ap2_sdk
+from a2a_proof.ap2 import (
+    AP2Error,
+    AP2VerificationError,
+    ensure_ap2_sdk,
+    inspect_ap2,
+    read_ap2_token,
+)
 from a2a_proof.config import ConfigError, load_config, write_config
 from a2a_proof.diffing import compare_results
 from a2a_proof.evidence import EvidenceError, write_evidence
 from a2a_proof.models import AgentConfig, ProofConfig, Scenario, SuiteResult
 from a2a_proof.reporting import (
+    render_ap2_invalid,
+    render_ap2_invalid_json,
+    render_ap2_json,
+    render_ap2_terminal,
     render_diff_json,
     render_diff_terminal,
     render_json,
@@ -39,6 +49,79 @@ class ProofCommandError(click.ClickException):
 @click.version_option(package_name="a2a-proof")
 def main() -> None:
     """Black-box contract tests for A2A agents."""
+
+
+@main.group("ap2")
+def ap2_command() -> None:
+    """Inspect signed AP2 mandates."""
+
+
+@ap2_command.command("inspect")
+@click.argument(
+    "token_file",
+    type=click.File("rb"),
+    default="-",
+)
+@click.option(
+    "--trust-root",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Public P-256 JWK used to verify the root mandate.",
+)
+@click.option("--audience", required=True, help="Expected terminal audience.")
+@click.option("--nonce", required=True, help="Expected terminal nonce.")
+@click.option(
+    "mandate_type",
+    "--type",
+    type=click.Choice(["auto", "checkout", "payment"]),
+    default="auto",
+    show_default=True,
+)
+@click.option("--transaction-id", help="Expected payment transaction ID.")
+@click.option("--open-checkout-hash", help="Expected payment checkout reference.")
+@click.option("--checkout-hash", help="Expected checkout hash.")
+@click.option(
+    "output_format",
+    "--format",
+    type=click.Choice(["terminal", "json"]),
+    default="terminal",
+)
+def ap2_inspect_command(
+    token_file: BinaryIO,
+    trust_root: Path,
+    audience: str,
+    nonce: str,
+    mandate_type: Literal["auto", "checkout", "payment"],
+    transaction_id: str | None,
+    open_checkout_hash: str | None,
+    checkout_hash: str | None,
+    output_format: str,
+) -> None:
+    """Verify an AP2 mandate token read from FILE or standard input."""
+    try:
+        result = inspect_ap2(
+            read_ap2_token(token_file),
+            trust_root,
+            audience,
+            nonce,
+            mandate_type=mandate_type,
+            transaction_id=transaction_id,
+            open_checkout_hash=open_checkout_hash,
+            checkout_hash=checkout_hash,
+        )
+    except AP2VerificationError as error:
+        if output_format == "json":
+            click.echo(render_ap2_invalid_json(str(error)))
+        else:
+            render_ap2_invalid(str(error), Console())
+        raise click.exceptions.Exit(1) from error
+    except (AP2Error, OSError) as error:
+        raise ProofCommandError(str(error)) from error
+
+    if output_format == "json":
+        click.echo(render_ap2_json(result))
+    else:
+        render_ap2_terminal(result, Console())
 
 
 @main.command("init")

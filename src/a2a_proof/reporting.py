@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unicodedata
 import xml.etree.ElementTree as ET
 
@@ -7,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from a2a_proof.ap2 import AP2Inspection
 from a2a_proof.models import DiffResult, ScenarioResult, SuiteResult
 
 MAX_DIAGNOSTIC_CHARS = 2_000
@@ -60,6 +62,46 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
 
 def render_json(result: SuiteResult) -> str:
     return result.model_dump_json(indent=2)
+
+
+def render_ap2_terminal(result: AP2Inspection, console: Console) -> None:
+    console.print(Text(f"AP2 {result.type.upper()} — VALID", style="bold green"))
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("Chain", f"{result.chain_length} signed mandates")
+    table.add_row("Audience", Text(_safe_text(result.audience, single_line=True)))
+    table.add_row("Checks", f"{len(result.checks)} passed")
+    if result.type == "payment":
+        payee = result.details["payee"]
+        amount = result.details["amount"]
+        table.add_row("Payee", _named_identifier(payee))
+        table.add_row("Amount", Text(_detail(f"{amount['minor_units']} {amount['currency']}")))
+        table.add_row("Transaction", Text(_detail(result.details["transaction_id"])))
+        table.add_row("Instrument", Text(_detail(result.details["payment_instrument_type"])))
+    else:
+        checkout = result.details["checkout"]
+        table.add_row("Checkout", Text(_detail(checkout["id"])))
+        if checkout["merchant"] is not None:
+            table.add_row("Merchant", _named_identifier(checkout["merchant"]))
+        table.add_row("Status", Text(_detail(checkout["status"])))
+        table.add_row("Currency", Text(_detail(checkout["currency"])))
+        table.add_row("Items", str(checkout["line_items"]))
+        table.add_row("Hash", Text(_detail(result.details["checkout_hash"])))
+    console.print(table)
+
+
+def render_ap2_json(result: AP2Inspection) -> str:
+    return json.dumps(result.as_dict(), ensure_ascii=False, indent=2)
+
+
+def render_ap2_invalid(error: str, console: Console) -> None:
+    console.print(Text("AP2 MANDATE — INVALID", style="bold red"))
+    console.print(Text(f"Reason: {_diagnostic(error)}"))
+
+
+def render_ap2_invalid_json(error: str) -> str:
+    return json.dumps({"valid": False, "error": _diagnostic(error)}, ensure_ascii=False, indent=2)
 
 
 def render_diff_terminal(result: DiffResult, console: Console) -> None:
@@ -239,6 +281,16 @@ def _safe_text(value: str, *, single_line: bool) -> str:
     if single_line:
         return " ".join(normalized.splitlines()).strip()
     return normalized
+
+
+def _detail(value: object) -> str:
+    return _safe_text(str(value), single_line=True)
+
+
+def _named_identifier(value: dict[str, object]) -> Text:
+    name = _detail(value["name"])
+    identifier = _detail(value["id"])
+    return Text(f"{name} ({identifier})")
 
 
 def _xml_text(value: str) -> str:

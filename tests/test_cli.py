@@ -9,6 +9,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterfa
 from click.testing import CliRunner
 
 import a2a_proof.cli as cli_module
+from a2a_proof.ap2 import AP2Inspection
 from a2a_proof.cli import main
 from a2a_proof.models import ProofConfig, ScenarioResult, SuiteResult, TrialResult
 
@@ -17,6 +18,158 @@ version: 1
 agent: {url: https://example.com}
 scenarios: [{name: smoke, message: Hello}]
 """
+
+
+def _ap2_inspection() -> AP2Inspection:
+    return AP2Inspection(
+        type="payment",
+        chain_length=2,
+        audience="merchant",
+        checks=("chain_signatures", "nonce"),
+        details={
+            "transaction_id": "checkout-hash",
+            "payee": {"id": "shop-1", "name": "Shop"},
+            "amount": {"minor_units": 1_000, "currency": "USD"},
+            "payment_instrument_type": "card",
+        },
+    )
+
+
+def test_ap2_inspect_reads_stdin_and_renders_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def inspect(token, root, audience, nonce, **options):
+        assert token == "signed-chain"
+        assert root == Path("root.jwk")
+        assert audience == "merchant"
+        assert nonce == "nonce-1"
+        assert options == {
+            "mandate_type": "auto",
+            "transaction_id": None,
+            "open_checkout_hash": None,
+            "checkout_hash": None,
+        }
+        return _ap2_inspection()
+
+    monkeypatch.setattr(cli_module, "inspect_ap2", inspect)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect",
+            "--trust-root",
+            "root.jwk",
+            "--audience",
+            "merchant",
+            "--nonce",
+            "nonce-1",
+            "--format",
+            "json",
+        ],
+        input="signed-chain\n",
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == _ap2_inspection().as_dict()
+
+
+def test_ap2_inspect_reads_file_and_renders_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = tmp_path / "mandate.txt"
+    token.write_text("signed-chain", encoding="ascii")
+    monkeypatch.setattr(cli_module, "inspect_ap2", lambda *args, **kwargs: _ap2_inspection())
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect",
+            str(token),
+            "--trust-root",
+            str(tmp_path / "root.jwk"),
+            "--audience",
+            "merchant",
+            "--nonce",
+            "nonce-1",
+            "--type",
+            "payment",
+            "--transaction-id",
+            "checkout-hash",
+            "--open-checkout-hash",
+            "open-hash",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "AP2 PAYMENT — VALID" in result.output
+    assert "Shop (shop-1)" in result.output
+    assert "1000 USD" in result.output
+    assert "signed-chain" not in result.output
+
+
+@pytest.mark.parametrize("output_format", ["terminal", "json"])
+def test_ap2_inspect_reports_invalid_mandate_with_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    output_format: str,
+) -> None:
+    def reject(*args, **kwargs):
+        raise cli_module.AP2VerificationError("signature validation failed")
+
+    monkeypatch.setattr(cli_module, "inspect_ap2", reject)
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect",
+            "--trust-root",
+            "root.jwk",
+            "--audience",
+            "merchant",
+            "--nonce",
+            "nonce-1",
+            "--format",
+            output_format,
+        ],
+        input="signed-chain\n",
+    )
+
+    assert result.exit_code == 1
+    assert "signature validation failed" in result.output
+    assert "signed-chain" not in result.output
+    if output_format == "json":
+        assert json.loads(result.output) == {
+            "valid": False,
+            "error": "signature validation failed",
+        }
+    else:
+        assert "AP2 MANDATE — INVALID" in result.output
+
+
+def test_ap2_inspect_reports_setup_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args, **kwargs):
+        raise cli_module.AP2Error("official AP2 SDK is unavailable")
+
+    monkeypatch.setattr(cli_module, "inspect_ap2", fail)
+    result = CliRunner().invoke(
+        main,
+        [
+            "ap2",
+            "inspect",
+            "--trust-root",
+            "root.jwk",
+            "--audience",
+            "merchant",
+            "--nonce",
+            "nonce-1",
+        ],
+        input="signed-chain\n",
+    )
+
+    assert result.exit_code == 2
+    assert result.output == "Error: official AP2 SDK is unavailable\n"
 
 
 def test_check_validates_configuration(tmp_path: Path) -> None:

@@ -37,6 +37,36 @@ def _outcomes(*values: TurnOutcome) -> Iterator[TurnOutcome]:
 
 
 @pytest.mark.asyncio
+async def test_passes_contract_directory_to_turn_assertions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config([{"name": "contract directory", "message": "run"}])
+    config.bind_contract_dir(tmp_path)
+    calls: list[Path | None] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome(
+            state="completed",
+            text=str(message),
+            task_id=None,
+            context_id=str(context["context_id"]),
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "evaluate",
+        lambda _expectation, _outcome, *, contract_dir=None: calls.append(contract_dir) or [],
+    )
+
+    result = await run_with_sender(config, send_turn)
+
+    assert result.passed
+    assert calls == [tmp_path]
+
+
+@pytest.mark.asyncio
 async def test_runs_multi_turn_scenario_with_task_continuation() -> None:
     values = _outcomes(
         TurnOutcome(
