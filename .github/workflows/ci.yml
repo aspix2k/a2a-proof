@@ -91,3 +91,45 @@ jobs:
           uv run --isolated --default-index https://pypi.org/simple --with-editable .
           --with 'ap2 @ git+https://github.com/google-agentic-commerce/AP2.git@b4587ac1d055888a73b4b21750973cffba961793'
           pytest -q tests/test_ap2_official.py
+
+  action:
+    name: First-party Action
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Start demo agent
+        run: |
+          ready_file="$RUNNER_TEMP/a2a-proof-demo-url"
+          uv run --isolated --frozen --no-dev python tests/action/server.py "$ready_file" &
+          echo "$!" > "$RUNNER_TEMP/a2a-proof-demo.pid"
+          for attempt in {1..300}; do
+            if test -s "$ready_file"; then
+              demo_url=$(cat "$ready_file")
+            else
+              sleep 0.1
+              continue
+            fi
+            if curl --fail --silent "$demo_url/.well-known/agent-card.json" >/dev/null; then
+              echo "A2A_PROOF_DEMO_URL=$demo_url" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 0.1
+          done
+          exit 1
+      - name: Run local Action
+        uses: ./
+        with:
+          config: tests/action/a2a-proof.yaml
+      - name: Stop demo agent
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/a2a-proof-demo.pid"; then
+            kill "$(cat "$RUNNER_TEMP/a2a-proof-demo.pid")" 2>/dev/null || true
+          fi

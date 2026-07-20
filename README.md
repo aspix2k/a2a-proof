@@ -32,6 +32,17 @@ AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-rece
 
 ## Quick start
 
+Try a real loopback A2A exchange without an API key or external service:
+
+```console
+uvx a2a-proof demo
+uvx a2a-proof demo --fail
+```
+
+The second command deliberately shows a contract failure and exits `1`.
+
+Point the runner at your agent:
+
 ```console
 uvx a2a-proof init https://agent.example.com
 ```
@@ -81,6 +92,16 @@ uvx a2a-proof run --scenario "billing dispute routing"
 uvx a2a-proof run --format junit --output a2a-proof.xml --evidence evidence
 uvx a2a-proof diff --against https://candidate-agent.example.com
 ```
+
+## GitHub Actions
+
+After checking out the repository, one step runs its default contract as a CI check:
+
+```yaml
+- uses: aspix2k/a2a-proof@v0.14.0
+```
+
+Set `config` only when the contract is not `a2a-proof.yaml`.
 
 ## Documentation
 

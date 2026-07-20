@@ -23,6 +23,7 @@ from a2a_proof.ap2 import (
     read_ap2_token,
 )
 from a2a_proof.config import ConfigError, load_config, write_config
+from a2a_proof.demo import run_demo
 from a2a_proof.diffing import compare_results
 from a2a_proof.evidence import EvidenceError, write_evidence
 from a2a_proof.models import AgentConfig, ProofConfig, Scenario, SuiteResult
@@ -303,6 +304,24 @@ def check_command(config_path: Path) -> None:
     except (AP2Error, ConfigError) as error:
         raise ProofCommandError(str(error)) from error
     click.echo(f"Valid: {_scenario_count(len(config.scenarios))}.")
+
+
+@main.command("demo")
+@click.option(
+    "--fail",
+    "intentional_failure",
+    is_flag=True,
+    help="Show the diagnostics from an intentionally failing contract.",
+)
+def demo_command(intentional_failure: bool) -> None:
+    """Run a real contract against a local deterministic A2A agent."""
+    try:
+        result = asyncio.run(run_demo(intentional_failure=intentional_failure))
+    except (A2AClientError, ValidationError, OSError, RuntimeError) as error:
+        raise ProofCommandError(str(error)) from error
+    render_terminal(result, Console(), verbose=False)
+    if not result.passed:
+        raise click.exceptions.Exit(1)
 
 
 @main.command("run")
