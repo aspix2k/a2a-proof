@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Literal
 
 from a2a.helpers import get_artifact_text, get_data_parts, get_message_text
@@ -55,8 +56,14 @@ class _CollectedContent:
 
 
 class ResponseCollector:
-    def __init__(self, context_id: str) -> None:
+    def __init__(
+        self,
+        context_id: str,
+        *,
+        expected_identity: tuple[str, str] | None = None,
+    ) -> None:
         self._context_id = context_id
+        self._expected_identity = expected_identity
         self._task_id: str | None = None
         self._state = "message"
         self._states: list[str] = []
@@ -68,6 +75,7 @@ class ResponseCollector:
         self._events += 1
         if self._events > MAX_EVENTS:
             raise ProtocolError(f"agent response exceeded {MAX_EVENTS} events")
+        self._validate_response_identity(response)
 
         if response.HasField("message"):
             self._add_message(response.message)
@@ -76,15 +84,15 @@ class ResponseCollector:
             self._add_task(response.task)
         elif response.HasField("status_update"):
             update = response.status_update
-            self._task_id = update.task_id or self._task_id
-            self._context_id = update.context_id or self._context_id
+            self._record_task_id(update.task_id)
+            self._record_context_id(update.context_id)
             self._record_state(_state_name(update.status.state))
             if update.status.HasField("message"):
                 self._add_message(update.status.message)
         elif response.HasField("artifact_update"):
             update = response.artifact_update
-            self._task_id = update.task_id or self._task_id
-            self._context_id = update.context_id or self._context_id
+            self._record_task_id(update.task_id)
+            self._record_context_id(update.context_id)
             self._add_artifact(update.artifact, append=update.append)
         else:
             raise ProtocolError("agent returned an empty stream event")
@@ -120,8 +128,8 @@ class ResponseCollector:
         )
 
     def _add_task(self, task: Task) -> None:
-        self._task_id = task.id or self._task_id
-        self._context_id = task.context_id or self._context_id
+        self._record_task_id(task.id)
+        self._record_context_id(task.context_id)
         self._record_state(_state_name(task.status.state))
         if task.status.HasField("message"):
             self._add_message(task.status.message)
@@ -131,6 +139,8 @@ class ResponseCollector:
             self._add_artifact(artifact, append=False)
 
     def _add_message(self, message: Message) -> None:
+        self._validate_task_id(message.task_id)
+        self._validate_context_id(message.context_id)
         if message.role == Role.ROLE_USER:
             return
         key = message.message_id or f"message-{len(self._messages)}"
@@ -140,8 +150,8 @@ class ResponseCollector:
             files=_collect_files(message.parts, source="message"),
             raw_bytes=_raw_size(message.parts),
         )
-        self._task_id = message.task_id or self._task_id
-        self._context_id = message.context_id or self._context_id
+        self._record_task_id(message.task_id)
+        self._record_context_id(message.context_id)
 
     def _add_artifact(self, artifact: Artifact, *, append: bool) -> None:
         key = artifact.artifact_id or f"artifact-{len(self._artifacts)}"
@@ -211,6 +221,53 @@ class ResponseCollector:
         if not self._states or self._states[-1] != state:
             self._states.append(state)
 
+    def _record_task_id(self, task_id: str) -> None:
+        if not task_id:
+            return
+        self._task_id = task_id
+
+    def _record_context_id(self, context_id: str) -> None:
+        if not context_id:
+            return
+        self._context_id = context_id
+
+    def _validate_response_identity(self, response: StreamResponse) -> None:
+        if self._expected_identity is None:
+            return
+        if response.HasField("task"):
+            task_id, context_id = response.task.id, response.task.context_id
+        elif response.HasField("status_update"):
+            task_id = response.status_update.task_id
+            context_id = response.status_update.context_id
+        elif response.HasField("artifact_update"):
+            task_id = response.artifact_update.task_id
+            context_id = response.artifact_update.context_id
+        elif response.HasField("message"):
+            task_id, context_id = response.message.task_id, response.message.context_id
+        else:
+            return
+        expected_task_id, expected_context_id = self._expected_identity
+        if task_id != expected_task_id:
+            raise ProtocolError("agent response changed the subscribed task ID")
+        if context_id != expected_context_id:
+            raise ProtocolError("agent response changed the subscribed task context")
+
+    def _validate_task_id(self, task_id: str) -> None:
+        if (
+            task_id
+            and self._expected_identity is not None
+            and task_id != self._expected_identity[0]
+        ):
+            raise ProtocolError("agent response changed the subscribed task ID")
+
+    def _validate_context_id(self, context_id: str) -> None:
+        if (
+            context_id
+            and self._expected_identity is not None
+            and context_id != self._expected_identity[1]
+        ):
+            raise ProtocolError("agent response changed the subscribed task context")
+
 
 def _collect_data(
     parts: Sequence[Part],
@@ -259,6 +316,7 @@ def _collect_files(
                     filename=part.filename or None,
                     media_type=part.media_type or None,
                     size_bytes=len(part.raw) if kind == "raw" else None,
+                    sha256=sha256(part.raw).hexdigest() if kind == "raw" else None,
                     artifact_id=artifact_id,
                     artifact_name=artifact_name,
                 )

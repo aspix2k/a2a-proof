@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
@@ -19,6 +19,7 @@ from a2a.server.tasks.inmemory_push_notification_config_store import (
     InMemoryPushNotificationConfigStore,
 )
 from a2a.types import (
+    Artifact,
     CancelTaskRequest,
     GetTaskRequest,
     Message,
@@ -26,7 +27,10 @@ from a2a.types import (
     Role,
     SendMessageRequest,
     SendMessageResponse,
+    StreamResponse,
+    SubscribeToTaskRequest,
     Task,
+    TaskArtifactUpdateEvent,
     TaskPushNotificationConfig,
     TaskState,
     TaskStatus,
@@ -45,6 +49,7 @@ TEST_EXTENSION = "https://example.com/extensions/structured-input/v1"
 
 class _AgentServer(ThreadingHTTPServer):
     task_state = "TASK_STATE_WORKING"
+    supports_streaming = False
 
 
 class _AgentHandler(BaseHTTPRequestHandler):
@@ -78,7 +83,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     },
                 ],
                 "capabilities": {
-                    "streaming": False,
+                    "streaming": getattr(self.server, "supports_streaming", False),
                     "pushNotifications": True,
                     "extensions": [{"uri": TEST_EXTENSION}],
                 },
@@ -96,22 +101,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        if self.path == "/tasks/task:cancel":
-            self.server.task_state = "TASK_STATE_CANCELED"
-            self._send_json(200, self._task())
+        if self._handle_rest_task_operation():
             return
         if self.path not in {"/a2a", "/message:send"}:
             self._send_json(404, {"error": "not found"})
             return
         size = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(size))
-        if self.path == "/a2a" and request["method"] in {"CancelTask", "GetTask"}:
-            if request["method"] == "CancelTask":
-                self.server.task_state = "TASK_STATE_CANCELED"
-            self._send_json(
-                200,
-                {"jsonrpc": "2.0", "id": request["id"], "result": self._task()},
-            )
+        if self._handle_jsonrpc_task_operation(request):
             return
         payload = request["params"] if self.path == "/a2a" else request
         push_config = payload.get("configuration", {}).get("taskPushNotificationConfig")
@@ -204,6 +201,37 @@ class _AgentHandler(BaseHTTPRequestHandler):
             )
             response.raise_for_status()
 
+    def _handle_rest_task_operation(self) -> bool:
+        if self.path == "/tasks/task:cancel":
+            self.server.task_state = "TASK_STATE_CANCELED"
+            self._send_json(200, self._task())
+            return True
+        if self.path == "/tasks/task:subscribe":
+            self._send_sse(self._subscription_events())
+            return True
+        return False
+
+    def _handle_jsonrpc_task_operation(self, request: dict[str, object]) -> bool:
+        if self.path != "/a2a":
+            return False
+        if request["method"] == "SubscribeToTask":
+            self._send_sse(
+                [
+                    {"jsonrpc": "2.0", "id": request["id"], "result": event}
+                    for event in self._subscription_events()
+                ]
+            )
+            return True
+        if request["method"] not in {"CancelTask", "GetTask"}:
+            return False
+        if request["method"] == "CancelTask":
+            self.server.task_state = "TASK_STATE_CANCELED"
+        self._send_json(
+            200,
+            {"jsonrpc": "2.0", "id": request["id"], "result": self._task()},
+        )
+        return True
+
     def _task(self) -> dict[str, object]:
         state = getattr(self.server, "task_state", "TASK_STATE_WORKING")
         return {
@@ -225,6 +253,52 @@ class _AgentHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _subscription_events(self) -> list[dict[str, object]]:
+        return [
+            {"task": self._task()},
+            {
+                "artifactUpdate": {
+                    "taskId": "task",
+                    "contextId": "context",
+                    "artifact": {
+                        "artifactId": "result",
+                        "name": "report",
+                        "parts": [
+                            {
+                                "raw": "cmVwb3J0",
+                                "filename": "report.txt",
+                                "mediaType": "text/plain",
+                            }
+                        ],
+                    },
+                }
+            },
+            {
+                "statusUpdate": {
+                    "taskId": "task",
+                    "contextId": "context",
+                    "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "message": {
+                            "messageId": "finished",
+                            "contextId": "context",
+                            "taskId": "task",
+                            "role": "ROLE_AGENT",
+                            "parts": [{"text": "finished"}],
+                        },
+                    },
+                }
+            },
+        ]
+
+    def _send_sse(self, events: Sequence[object]) -> None:
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -275,6 +349,47 @@ class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
     ) -> Task:
         return self._task()
 
+    async def SubscribeToTask(
+        self,
+        request: SubscribeToTaskRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[StreamResponse]:
+        yield StreamResponse(task=self._task())
+        yield StreamResponse(
+            artifact_update=TaskArtifactUpdateEvent(
+                task_id=request.id,
+                context_id="context",
+                artifact=Artifact(
+                    artifact_id="result",
+                    name="report",
+                    parts=[
+                        Part(
+                            raw=b"report",
+                            filename="report.txt",
+                            media_type="text/plain",
+                        )
+                    ],
+                ),
+            )
+        )
+        self.task_state = TaskState.TASK_STATE_COMPLETED
+        yield StreamResponse(
+            status_update=TaskStatusUpdateEvent(
+                task_id=request.id,
+                context_id="context",
+                status=TaskStatus(
+                    state=self.task_state,
+                    message=Message(
+                        message_id="finished",
+                        context_id="context",
+                        task_id=request.id,
+                        role=Role.ROLE_AGENT,
+                        parts=[Part(text="finished")],
+                    ),
+                ),
+            )
+        )
+
     def _task(self) -> Task:
         return Task(
             id="task",
@@ -292,9 +407,97 @@ class _GrpcAgent(a2a_pb2_grpc.A2AServiceServicer):
         )
 
 
+def _grpc_agent_card(port: int, *, streaming: bool) -> dict[str, object]:
+    return {
+        "name": "gRPC echo",
+        "version": "1.0.0",
+        "supportedInterfaces": [
+            {
+                "url": f"127.0.0.1:{port}",
+                "protocolBinding": "GRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "capabilities": {
+            "streaming": streaming,
+            "extensions": [{"uri": TEST_EXTENSION}],
+        },
+        "defaultInputModes": ["text/plain", "application/json"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [],
+    }
+
+
+def _subscription_config(
+    url: str,
+    transport: str,
+    *,
+    grpc_tls: bool = True,
+    allow_cross_origin_interfaces: bool = False,
+) -> ProofConfig:
+    return ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {
+                "url": url,
+                "transport": transport,
+                "grpc_tls": grpc_tls,
+                "allow_cross_origin_interfaces": allow_cross_origin_interfaces,
+            },
+            "scenarios": [
+                {
+                    "name": "resume report",
+                    "turns": [
+                        {
+                            "message": "Start a report",
+                            "return_immediately": True,
+                            "expect": {"state": "working"},
+                        },
+                        {
+                            "action": "subscribe",
+                            "expect": {
+                                "state": "completed",
+                                "states": {"contains_in_order": ["working", "completed"]},
+                                "text": {"contains": "finished"},
+                                "files": {
+                                    "source": "artifact",
+                                    "artifact_name": "report",
+                                    "filename": "report.txt",
+                                    "media_type": "text/plain",
+                                    "kind": "raw",
+                                    "size_bytes": 6,
+                                    "sha256": (
+                                        "845e91831319e89c4d656bdb80c278ac09a7230d61e5dfd2e1b1fbb436ac8917"
+                                    ),
+                                },
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+
 @pytest.fixture
 def agent_url() -> Iterator[str]:
     server = _AgentServer(("127.0.0.1", 0), _AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host = str(server.server_address[0])
+    port = int(server.server_address[1])
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.fixture
+def streaming_agent_url() -> Iterator[str]:
+    server = _AgentServer(("127.0.0.1", 0), _AgentHandler)
+    server.supports_streaming = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host = str(server.server_address[0])
@@ -387,6 +590,15 @@ async def test_runs_task_lifecycle_contract_over_real_http_transports(
     )
 
     assert (await run(config)).passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["JSONRPC", "HTTP+JSON"])
+async def test_runs_task_subscription_over_real_http_transports(
+    streaming_agent_url: str,
+    transport: str,
+) -> None:
+    assert (await run(_subscription_config(streaming_agent_url, transport))).passed
 
 
 @pytest.mark.asyncio
@@ -560,27 +772,7 @@ async def test_runs_real_grpc_exchange() -> None:
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
     respx.get("https://grpc.example/.well-known/agent-card.json").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "name": "gRPC echo",
-                "version": "1.0.0",
-                "supportedInterfaces": [
-                    {
-                        "url": f"127.0.0.1:{port}",
-                        "protocolBinding": "GRPC",
-                        "protocolVersion": "1.0",
-                    }
-                ],
-                "capabilities": {
-                    "streaming": False,
-                    "extensions": [{"uri": TEST_EXTENSION}],
-                },
-                "defaultInputModes": ["text/plain", "application/json"],
-                "defaultOutputModes": ["text/plain"],
-                "skills": [],
-            },
-        )
+        return_value=httpx.Response(200, json=_grpc_agent_card(port, streaming=False))
     )
     config = ProofConfig.model_validate(
         {
@@ -626,6 +818,29 @@ async def test_runs_real_grpc_exchange() -> None:
         assert (await run(config)).passed
         assert service.metadata["authorization"] == "Bearer secret"
         assert service.metadata["a2a-extensions"] == TEST_EXTENSION
+    finally:
+        await server.stop(None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_runs_task_subscription_over_real_grpc() -> None:
+    server = grpc.aio.server()
+    a2a_pb2_grpc.add_A2AServiceServicer_to_server(_GrpcAgent(), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    respx.get("https://grpc-stream.example/.well-known/agent-card.json").mock(
+        return_value=httpx.Response(200, json=_grpc_agent_card(port, streaming=True))
+    )
+    config = _subscription_config(
+        "https://grpc-stream.example",
+        "GRPC",
+        grpc_tls=False,
+        allow_cross_origin_interfaces=True,
+    )
+
+    try:
+        assert (await run(config)).passed
     finally:
         await server.stop(None)
 

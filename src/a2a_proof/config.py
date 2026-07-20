@@ -244,6 +244,27 @@ def config_schema() -> dict[str, Any]:
         {"required": ["not_contains"]},
         {"required": ["not_contains_env"]},
     ]
+    file_expectation = definitions["FileExpectation"]
+    integrity_fields = ("size_bytes", "min_size_bytes", "max_size_bytes", "sha256")
+    for name in integrity_fields:
+        file_expectation["properties"][name].pop("default")
+    file_expectation["allOf"] = [
+        {
+            "if": {"anyOf": [{"required": [name]} for name in integrity_fields]},
+            "then": {
+                "required": ["kind"],
+                "properties": {"kind": {"const": "raw"}},
+            },
+        },
+        {
+            "not": {
+                "anyOf": [
+                    {"required": ["size_bytes", "min_size_bytes"]},
+                    {"required": ["size_bytes", "max_size_bytes"]},
+                ]
+            }
+        },
+    ]
     turn = definitions["Turn"]
     content_fields = [{"required": [name]} for name in ("message", "data", "files")]
     content_forbidden = [
@@ -285,6 +306,17 @@ def config_schema() -> dict[str, Any]:
             "required": ["action"],
             "properties": {"action": {"const": "get_task"}},
             "not": {"anyOf": [*action_forbidden, {"required": ["timeout_seconds"]}]},
+        },
+        {
+            "required": ["action"],
+            "properties": {"action": {"const": "subscribe"}},
+            "not": {
+                "anyOf": [
+                    *action_forbidden,
+                    {"required": ["history_length"]},
+                    {"required": ["timeout_seconds"]},
+                ]
+            },
         },
         {
             "required": ["action"],

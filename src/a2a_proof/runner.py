@@ -57,6 +57,7 @@ async def run(
             session.send_turn,
             cancel_task=session.cancel_task,
             get_task=session.get_task,
+            subscribe_task=session.subscribe_task,
             card=session.card,
             invariant_secrets=invariant_secrets,
             max_parallel_trials=max_parallel_trials,
@@ -70,6 +71,7 @@ async def run_with_sender(
     *,
     cancel_task: TaskAction | None = None,
     get_task: TaskAction | None = None,
+    subscribe_task: TaskAction | None = None,
     card: AgentCard | None = None,
     invariant_secrets: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
@@ -95,6 +97,7 @@ async def run_with_sender(
                 send_turn,
                 cancel_task,
                 get_task,
+                subscribe_task,
                 config,
                 secrets,
                 max_parallel_trials,
@@ -117,6 +120,7 @@ async def _run_scenario(
     send_turn: SendTurn,
     cancel_task: TaskAction | None,
     get_task: TaskAction | None,
+    subscribe_task: TaskAction | None,
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     max_parallel_trials: int,
@@ -130,6 +134,7 @@ async def _run_scenario(
                 send_turn,
                 cancel_task,
                 get_task,
+                subscribe_task,
                 config,
                 invariant_secrets,
                 push_receiver,
@@ -147,6 +152,7 @@ async def _run_scenario(
                     send_turn,
                     cancel_task,
                     get_task,
+                    subscribe_task,
                     config,
                     invariant_secrets,
                     push_receiver,
@@ -174,6 +180,7 @@ async def _run_trial(
     send_turn: SendTurn,
     cancel_task: TaskAction | None,
     get_task: TaskAction | None,
+    subscribe_task: TaskAction | None,
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     push_receiver: PushReceiver | None,
@@ -192,6 +199,7 @@ async def _run_trial(
                 send_turn,
                 cancel_task,
                 get_task,
+                subscribe_task,
                 push_receiver,
                 push_subscription,
                 config,
@@ -257,6 +265,7 @@ async def _execute_turn(
     send_turn: SendTurn,
     cancel_task: TaskAction | None,
     get_task: TaskAction | None,
+    subscribe_task: TaskAction | None,
     push_receiver: PushReceiver | None,
     push_subscription: PushSubscription | None,
     config: ProofConfig,
@@ -268,6 +277,7 @@ async def _execute_turn(
             turn,
             cancel_task,
             get_task,
+            subscribe_task,
             push_subscription,
             config,
             context_id,
@@ -329,6 +339,7 @@ async def _execute_action(
     turn: Turn,
     cancel_task: TaskAction | None,
     get_task: TaskAction | None,
+    subscribe_task: TaskAction | None,
     push_subscription: PushSubscription | None,
     config: ProofConfig,
     context_id: str,
@@ -342,7 +353,12 @@ async def _execute_action(
         outcome = await push_subscription.wait(turn.timeout_seconds or config.agent.timeout)
         push_subscription.close()
         return outcome, None
-    operation = cancel_task if turn.action == "cancel" else get_task
+    operations = {
+        "cancel": cancel_task,
+        "get_task": get_task,
+        "subscribe": subscribe_task,
+    }
+    operation = operations.get(turn.action)
     if operation is None:
         raise ValueError(f"action {turn.action!r} is not available")
     arguments: dict[str, object] = {"task_id": task_id, "context_id": context_id}

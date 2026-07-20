@@ -78,6 +78,7 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
                         {"message": "Start", "return_immediately": True},
                         {"action": "cancel"},
                         {"action": "get_task", "history_length": 5},
+                        {"action": "subscribe"},
                     ],
                 },
                 {
@@ -211,6 +212,42 @@ def test_schema_rejects_invalid_task_action_turns() -> None:
     )
     assert validator.is_valid(push)
     assert not validator.is_valid(configuration({"message": "Start", "push_notification": True}))
+
+
+def test_schema_requires_raw_file_content_assertions() -> None:
+    validator = Draft202012Validator(config_schema())
+
+    def configuration(file_expectation: dict[str, object]) -> dict[str, object]:
+        return {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "scenarios": [
+                {
+                    "name": "file integrity",
+                    "message": "Create a file",
+                    "expect": {"files": file_expectation},
+                }
+            ],
+        }
+
+    assert validator.is_valid(
+        configuration(
+            {
+                "kind": "raw",
+                "min_size_bytes": 1,
+                "max_size_bytes": 10,
+                "sha256": "a" * 64,
+            }
+        )
+    )
+    assert not validator.is_valid(configuration({"sha256": "a" * 64}))
+    assert not validator.is_valid(configuration({"kind": "url", "size_bytes": 1}))
+    assert not validator.is_valid(
+        configuration({"kind": "raw", "size_bytes": 1, "max_size_bytes": 2})
+    )
+    assert not validator.is_valid(configuration({"kind": "raw", "size_bytes": -1}))
+    assert not validator.is_valid(configuration({"kind": "raw", "size_bytes": 20_000_001}))
+    assert not validator.is_valid(configuration({"kind": "raw", "sha256": None}))
 
 
 def test_schema_rejects_invalid_ap2_expectation_shape() -> None:

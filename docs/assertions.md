@@ -70,8 +70,8 @@ string check. See [AP2 contracts](ap2.md).
 
 ## Files
 
-Response file checks match metadata from raw and URL parts. Remote URLs remain passive and are
-never included in reports.
+Response file checks match metadata from raw and URL parts. Inline raw parts also support exact or
+bounded size and SHA-256 checks.
 
 ```yaml
 expect:
@@ -80,6 +80,14 @@ expect:
     artifact_name: summary
     filename: summary.txt
     media_type: text/plain
-    kind: url
+    kind: raw
+    min_size_bytes: 1
+    max_size_bytes: 1000000
+    sha256: 845e91831319e89c4d656bdb80c278ac09a7230d61e5dfd2e1b1fbb436ac8917
     count: 1
 ```
+
+`size_bytes` is exact and cannot be combined with `min_size_bytes` or `max_size_bytes`; range
+bounds are inclusive. Content assertions require `kind: raw`. Remote URLs remain passive: they are
+never fetched, hashed, or included in reports. Inline bytes and their computed digest are not
+written to reports or evidence.

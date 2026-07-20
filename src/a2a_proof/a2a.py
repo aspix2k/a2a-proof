@@ -24,6 +24,7 @@ from a2a.types import (
     SendMessageConfiguration,
     SendMessageRequest,
     StreamResponse,
+    SubscribeToTaskRequest,
     Task,
     TaskPushNotificationConfig,
 )
@@ -232,6 +233,39 @@ class A2ASession:
                 f"agent did not return task within {self._timeout:g} seconds"
             ) from error
         return _task_outcome(task, context_id, started)
+
+    async def subscribe_task(self, *, task_id: str, context_id: str) -> TurnOutcome:
+        if not self.card.capabilities.streaming:
+            raise ProtocolError("Agent Card does not advertise streaming")
+        collector = ResponseCollector(
+            context_id,
+            expected_identity=(task_id, context_id),
+        )
+        started = perf_counter()
+        first_event_ms: int | None = None
+        try:
+            async with asyncio.timeout(self._timeout):
+                async for response in self._client.subscribe(
+                    SubscribeToTaskRequest(id=task_id),
+                    context=self._call_context(),
+                ):
+                    if response.HasField("message"):
+                        raise ProtocolError("task subscription returned a standalone message")
+                    if first_event_ms is None:
+                        if not response.HasField("task"):
+                            raise ProtocolError(
+                                "task subscription did not start with a task snapshot"
+                            )
+                        first_event_ms = round((perf_counter() - started) * 1_000)
+                    collector.add(response)
+        except TimeoutError as error:
+            raise ProtocolError(
+                f"agent did not finish subscribed task within {self._timeout:g} seconds"
+            ) from error
+        return collector.finish(
+            duration_ms=round((perf_counter() - started) * 1_000),
+            first_event_ms=first_event_ms,
+        )
 
     def _call_context(self) -> ClientCallContext:
         return ClientCallContext(
