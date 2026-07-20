@@ -17,9 +17,17 @@ from a2a_proof.models import (
     LatencyExpectation,
     ProofConfig,
     TrialResult,
+    Turn,
 )
 from a2a_proof.protocol import TurnOutcome
-from a2a_proof.runner import _evaluate_latency, _format_error, _percentile, run_with_sender
+from a2a_proof.push import PushReceiver, PushTarget
+from a2a_proof.runner import (
+    _evaluate_latency,
+    _execute_action,
+    _format_error,
+    _percentile,
+    run_with_sender,
+)
 
 
 def _config(scenarios: list[dict[str, object]]) -> ProofConfig:
@@ -214,6 +222,170 @@ async def test_runs_cancel_and_persistence_actions() -> None:
         "get_task",
         {"task_id": "task", "context_id": "server-context", "history_length": 5},
     )
+
+
+@pytest.mark.asyncio
+async def test_runs_push_notification_behavior_contract() -> None:
+    class Subscription:
+        target = PushTarget(url="http://127.0.0.1/push", token="token")
+
+        def __init__(self) -> None:
+            self.bound: tuple[str, str] | None = None
+            self.closed = 0
+
+        def bind(self, *, task_id: str, context_id: str) -> None:
+            self.bound = (task_id, context_id)
+
+        async def wait(self, timeout_seconds: float) -> TurnOutcome:
+            assert timeout_seconds == 5
+            return TurnOutcome(
+                state="completed",
+                text="export ready",
+                task_id="task",
+                context_id="server-context",
+                duration_ms=20,
+                first_event_ms=10,
+                states=("working", "completed"),
+            )
+
+        def close(self) -> None:
+            self.closed += 1
+
+    class Receiver:
+        def __init__(self) -> None:
+            self.subscription = Subscription()
+
+        def register(self) -> Subscription:
+            return self.subscription
+
+    receiver = Receiver()
+    calls: list[object] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        calls.append(context["push_notification"])
+        assert message == "Start export"
+        return TurnOutcome(
+            state="working",
+            text="accepted",
+            task_id="task",
+            context_id="server-context",
+            duration_ms=2,
+        )
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "push_notifications": {},
+            "scenarios": [
+                {
+                    "name": "async export",
+                    "turns": [
+                        {
+                            "message": "Start export",
+                            "return_immediately": True,
+                            "push_notification": True,
+                            "expect": {"state": "working"},
+                        },
+                        {
+                            "action": "await_push",
+                            "timeout_seconds": 5,
+                            "expect": {
+                                "state": "completed",
+                                "text": {"contains": "ready"},
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    result = await run_with_sender(
+        config,
+        send_turn,
+        push_receiver=cast(PushReceiver, receiver),
+    )
+
+    assert result.passed
+    assert calls == [receiver.subscription.target]
+    assert receiver.subscription.bound == ("task", "server-context")
+    assert receiver.subscription.closed == 1
+    assert result.scenarios[0].trials[0].turns[1].states == ["working", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_push_contract_requires_receiver_and_task_id() -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "push_notifications": {},
+            "scenarios": [
+                {
+                    "name": "async job",
+                    "turns": [
+                        {
+                            "message": "Start",
+                            "return_immediately": True,
+                            "push_notification": True,
+                        },
+                        {"action": "await_push"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    async def accepted_without_task(message: str | None, **context: object) -> TurnOutcome:
+        return TurnOutcome("working", "accepted", None, str(context["context_id"]), 1)
+
+    missing_receiver = await run_with_sender(config, accepted_without_task)
+    assert missing_receiver.scenarios[0].trials[0].error == (
+        "ValueError: push receiver is not available"
+    )
+
+    class Subscription:
+        target = PushTarget(url="http://127.0.0.1/push", token="token")
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Receiver:
+        def __init__(self) -> None:
+            self.subscription = Subscription()
+
+        def register(self) -> Subscription:
+            return self.subscription
+
+    receiver = Receiver()
+    missing_task = await run_with_sender(
+        config,
+        accepted_without_task,
+        push_receiver=cast(PushReceiver, receiver),
+    )
+    assert missing_task.scenarios[0].trials[0].error == (
+        "ValueError: push-enabled turn did not return a task ID"
+    )
+    assert receiver.subscription.closed
+
+
+@pytest.mark.asyncio
+async def test_await_push_requires_active_subscription() -> None:
+    config = _config([{"name": "unused", "message": "Start"}])
+    with pytest.raises(ValueError, match="no active push subscription"):
+        await _execute_action(
+            Turn(action="await_push"),
+            None,
+            None,
+            None,
+            config,
+            "context",
+            "task",
+        )
 
 
 @pytest.mark.asyncio
@@ -490,6 +662,48 @@ async def test_run_defaults_to_sequential_trials(monkeypatch: pytest.MonkeyPatch
 
     assert result.passed
     assert maximum == 1
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_open_unused_push_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Session:
+        card = AgentCard(name="Agent")
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def send_turn(self, message: str | None, **context: object) -> TurnOutcome:
+            return TurnOutcome("completed", "ok", None, str(context["context_id"]), 1)
+
+        async def cancel_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+        async def get_task(self, **context: object) -> TurnOutcome:
+            raise AssertionError("not called")
+
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "push_notifications": {},
+            "scenarios": [{"name": "ordinary", "message": "hello"}],
+        }
+    )
+
+    async def connect(agent: object) -> Session:
+        assert agent is config.agent
+        return Session()
+
+    def unexpected_receiver(config: object) -> None:
+        raise AssertionError("unused push receiver was opened")
+
+    monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
+    monkeypatch.setattr(runner_module, "PushReceiver", unexpected_receiver)
+
+    assert (await runner_module.run(config)).passed
 
 
 @pytest.mark.asyncio

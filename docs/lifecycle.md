@@ -29,3 +29,6 @@ contain a task ID or if the selected transport does not expose the requested ope
 JSON-RPC, HTTP+JSON, and gRPC use their native A2A lifecycle methods. For a streaming Agent Card,
 normal turns keep streaming collection while `return_immediately` uses a separate non-streaming
 client as required by the SDK.
+
+Long-running work can also wait for the agent's actual callback instead of polling with
+`get_task`. See [Push notification contracts](push-notifications.md).

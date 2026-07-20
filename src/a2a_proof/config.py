@@ -246,24 +246,50 @@ def config_schema() -> dict[str, Any]:
     ]
     turn = definitions["Turn"]
     content_fields = [{"required": [name]} for name in ("message", "data", "files")]
-    content_forbidden = [{"required": [name]} for name in ("action", "history_length")]
+    content_forbidden = [
+        {"required": [name]} for name in ("action", "history_length", "timeout_seconds")
+    ]
     action_forbidden = [
-        {"required": [name]} for name in ("message", "data", "files", "return_immediately")
+        {"required": [name]}
+        for name in ("message", "data", "files", "return_immediately", "push_notification")
     ]
     turn["oneOf"] = [
         {
             "anyOf": content_fields,
             "not": {"anyOf": content_forbidden},
+            "allOf": [
+                {
+                    "if": {
+                        "required": ["push_notification"],
+                        "properties": {"push_notification": {"const": True}},
+                    },
+                    "then": {
+                        "required": ["return_immediately"],
+                        "properties": {"return_immediately": {"const": True}},
+                    },
+                }
+            ],
         },
         {
             "required": ["action"],
             "properties": {"action": {"const": "cancel"}},
-            "not": {"anyOf": [*action_forbidden, {"required": ["history_length"]}]},
+            "not": {
+                "anyOf": [
+                    *action_forbidden,
+                    {"required": ["history_length"]},
+                    {"required": ["timeout_seconds"]},
+                ]
+            },
         },
         {
             "required": ["action"],
             "properties": {"action": {"const": "get_task"}},
-            "not": {"anyOf": action_forbidden},
+            "not": {"anyOf": [*action_forbidden, {"required": ["timeout_seconds"]}]},
+        },
+        {
+            "required": ["action"],
+            "properties": {"action": {"const": "await_push"}},
+            "not": {"anyOf": [*action_forbidden, {"required": ["history_length"]}]},
         },
     ]
     schema.update(

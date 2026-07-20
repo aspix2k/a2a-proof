@@ -11,8 +11,6 @@ Black-box contract tests for A2A agents.
 `a2a-proof` discovers a deployed agent, sends real A2A requests, and checks its observable
 behavior. It needs no access to the agent's source code, framework, prompts, or model provider.
 
-## Why
-
 The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol conformance, and the
 [A2A Inspector](https://github.com/a2aproject/a2a-inspector) supports interactive debugging.
 `a2a-proof` adds repeatable behavior and lifecycle contracts for local development and CI.
@@ -20,14 +18,25 @@ The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol co
 It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC. The SDK compatibility layer also supports
 AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-receipt payment flows.
 
+## What you can prove
+
+| Risk | Contract |
+| --- | --- |
+| A prompt, model, or backend change alters an answer | Text, structured data, JSON Schema, and file assertions |
+| An LLM succeeds only some of the time or gets slower | Repeated trials, pass rates, parallel runs, and p50/p95 latency |
+| A long-running task breaks after acceptance | Multi-turn state trajectories, cancellation, persistence, and push delivery |
+| Staging no longer behaves like production | Agent Card preflight and deployment diff |
+| Agent text leaks a secret or system prompt | Global invariants and bounded failure evidence |
+| An agent produces an invalid payment proof | Signed AP2 mandate-chain and receipt verification |
+
 ## Quick start
 
 ```console
 uvx a2a-proof init https://agent.example.com
-uvx a2a-proof run
 ```
 
-`init` reads the Agent Card and creates `a2a-proof.yaml`. Add the behavior you depend on:
+`init` reads the Agent Card and creates `a2a-proof.yaml`. Replace its smoke scenario with behavior
+your users depend on:
 
 ```yaml
 version: 1
@@ -35,51 +44,49 @@ version: 1
 agent:
   url: https://agent.example.com
 
+defaults:
+  trials: 5
+  pass_rate: 0.8
+
 scenarios:
-  - name: capital of France
-    message: What is the capital of France?
+  - name: billing dispute routing
+    message: A customer says their card was charged twice for order 4815.
+    latency:
+      p95_seconds: 15
     expect:
       state: completed
-      max_seconds: 10
-      text:
-        contains: Paris
+      data:
+        - path: /queue
+          equals: billing-disputes
+        - path: /priority
+          matches: "(?i)^high$"
 ```
 
 ```console
-$ a2a-proof run
-┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━┓
-┃ Result ┃ Scenario          ┃ Trials ┃ Time ┃
-┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━┩
-│ PASS   │ capital of France │    1/1 │ 1.2s │
-└────────┴───────────────────┴────────┴──────┘
+$ uvx a2a-proof run
+┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━┓
+┃ Result ┃ Scenario                ┃ Trials ┃ Time ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━┩
+│ PASS   │ billing dispute routing │    4/5 │ 3.2s │
+└────────┴─────────────────────────┴────────┴──────┘
 
-1 scenario passed in 1.2s
+1 scenario passed in 3.2s
 ```
 
-## What it covers
-
-- Text, structured data, and file parts.
-- Single-turn, multi-turn, repeated, and parallel trials.
-- Agent Card, state trajectory, latency, and global leak invariants.
-- Task cancellation and persistence through real A2A lifecycle operations.
-- Signed AP2 mandate chains and receipts, including offline inspection.
-- Baseline-to-candidate deployment comparison.
-- Terminal, JSON, JUnit, and bounded evidence output.
-
-Compare the same contract against a candidate deployment:
+Run one scenario, save failure evidence, or compare the same contract against another deployment:
 
 ```console
-a2a-proof diff --against https://candidate-agent.example.com
+uvx a2a-proof run --scenario "billing dispute routing"
+uvx a2a-proof run --format junit --output a2a-proof.xml --evidence evidence
+uvx a2a-proof diff --against https://candidate-agent.example.com
 ```
-
-The diff reports regressions, improvements, changed results, and unchanged results. It compares
-contract outcomes rather than raw model text; the candidate result controls the exit status.
 
 ## Documentation
 
 - [Writing contracts](docs/contracts.md)
 - [Assertions](docs/assertions.md)
 - [Task lifecycle](docs/lifecycle.md)
+- [Push notifications](docs/push-notifications.md)
 - [AP2 contracts](docs/ap2.md)
 - [Running in development and CI](docs/operations.md)
 - [Configuration schema](schema/a2a-proof.schema.json)
@@ -96,23 +103,4 @@ default. Remote file URLs are never fetched or written to reports.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reports.
 
-## Development
-
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
-
-```console
-uv sync --all-groups
-uv run ruff format --check .
-uv run ruff check .
-uv run ty check
-uv run python scripts/generate_schema.py --check
-uv run pytest --cov=a2a_proof
-uv run mutmut run --max-children 1
-```
-
-The test suite includes real JSON-RPC, HTTP+JSON, and gRPC exchanges. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
-
-## License
-
-MIT
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).

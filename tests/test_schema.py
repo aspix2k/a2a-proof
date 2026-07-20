@@ -70,6 +70,7 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
         {
             "version": 1,
             "agent": {"url": "https://example.com"},
+            "push_notifications": {},
             "scenarios": [
                 {
                     "name": "lifecycle",
@@ -78,7 +79,18 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
                         {"action": "cancel"},
                         {"action": "get_task", "history_length": 5},
                     ],
-                }
+                },
+                {
+                    "name": "push",
+                    "turns": [
+                        {
+                            "message": "Start",
+                            "return_immediately": True,
+                            "push_notification": True,
+                        },
+                        {"action": "await_push", "timeout_seconds": 30},
+                    ],
+                },
             ],
         }
     )
@@ -191,6 +203,14 @@ def test_schema_rejects_invalid_task_action_turns() -> None:
         configuration({"action": "get_task", "return_immediately": False})
     )
     assert not validator.is_valid(configuration({"history_length": 1}))
+    assert not validator.is_valid(configuration({"action": "await_push", "history_length": 1}))
+    assert not validator.is_valid(configuration({"message": "Start", "timeout_seconds": 1}))
+
+    push = configuration(
+        {"message": "Start", "return_immediately": True, "push_notification": True}
+    )
+    assert validator.is_valid(push)
+    assert not validator.is_valid(configuration({"message": "Start", "push_notification": True}))
 
 
 def test_schema_rejects_invalid_ap2_expectation_shape() -> None:

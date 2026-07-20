@@ -86,6 +86,10 @@ scenarios:
         matches: "(?i)red|blue|yellow"
 ```
 
+Long-running scenarios can attach a per-trial callback and assert the delivered event with
+`push_notification: true` followed by `action: await_push`. See
+[Push notification contracts](push-notifications.md).
+
 ## Agent Card preflight
 
 `card` assertions run once before scenario messages. Skill checks use stable skill IDs; input and

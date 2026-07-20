@@ -460,6 +460,8 @@ def test_resolves_single_turn_structured_input() -> None:
         "action": None,
         "return_immediately": False,
         "history_length": None,
+        "push_notification": False,
+        "timeout_seconds": None,
         "expect": {
             "state": None,
             "text": None,
@@ -496,6 +498,110 @@ def test_validates_task_action_turns() -> None:
         models_module.Turn(action="cancel", return_immediately=True)
     with pytest.raises(ValueError, match="history_length can only"):
         models_module.Turn(message="Start", history_length=1)
+
+
+def test_validates_push_notification_workflow() -> None:
+    config = models_module.ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://agent.example"},
+            "push_notifications": {},
+            "scenarios": [
+                {
+                    "name": "async export",
+                    "turns": [
+                        {
+                            "message": "Start export",
+                            "return_immediately": True,
+                            "push_notification": True,
+                        },
+                        {
+                            "action": "await_push",
+                            "timeout_seconds": 15,
+                            "expect": {"state": "completed"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert config.push_notifications == models_module.PushNotificationsConfig()
+    assert config.scenarios[0].turns is not None
+    assert config.scenarios[0].turns[1].action == "await_push"
+
+    with pytest.raises(ValueError, match="requires return_immediately"):
+        models_module.Turn(message="Start", push_notification=True)
+    with pytest.raises(ValueError, match="only be used with an input turn"):
+        models_module.Turn(action="await_push", push_notification=True)
+    with pytest.raises(ValueError, match="only be used with an input turn"):
+        models_module.Turn(action="cancel", push_notification=False)
+    with pytest.raises(ValueError, match="must be followed by action: await_push"):
+        models_module.Scenario(
+            name="missing await",
+            turns=[
+                {
+                    "message": "Start",
+                    "return_immediately": True,
+                    "push_notification": True,
+                }
+            ],
+        )
+    with pytest.raises(ValueError, match="must follow a push_notification turn"):
+        models_module.Scenario(
+            name="orphan await",
+            turns=[{"message": "Start"}, {"action": "await_push"}],
+        )
+    with pytest.raises(ValueError, match="timeout_seconds can only"):
+        models_module.Turn(message="Start", timeout_seconds=1)
+
+
+def test_requires_and_secures_push_receiver_settings() -> None:
+    scenario = {
+        "name": "push",
+        "turns": [
+            {
+                "message": "Start",
+                "return_immediately": True,
+                "push_notification": True,
+            },
+            {"action": "await_push"},
+        ],
+    }
+    with pytest.raises(ValueError, match="push_notifications settings are required"):
+        models_module.ProofConfig.model_validate(
+            {
+                "version": 1,
+                "agent": {"url": "https://agent.example"},
+                "scenarios": [scenario],
+            }
+        )
+    with pytest.raises(ValueError, match="public_url is required"):
+        models_module.PushNotificationsConfig(listen_host="0.0.0.0")
+    with pytest.raises(ValueError, match="public_url is required"):
+        models_module.PushNotificationsConfig(listen_host="8.8.8.8")
+    with pytest.raises(ValueError, match="non-local public_url must use HTTPS"):
+        models_module.PushNotificationsConfig(public_url="http://hooks.example")
+    with pytest.raises(ValueError, match="query or fragment"):
+        models_module.PushNotificationsConfig(public_url="https://hooks.example/base?token=x")
+    with pytest.raises(ValueError, match="credentials"):
+        models_module.PushNotificationsConfig(public_url="https://user:pass@hooks.example")
+    with pytest.raises(ValueError, match="multicast"):
+        models_module.PushNotificationsConfig(listen_host="224.0.0.1")
+
+    assert (
+        models_module.PushNotificationsConfig(
+            listen_host="0.0.0.0",
+            public_url="https://hooks.example/base",
+        ).listen_host
+        == "0.0.0.0"
+    )
+    assert str(models_module.PushNotificationsConfig(public_url="http://localhost").public_url) == (
+        "http://localhost/"
+    )
+    assert str(models_module.PushNotificationsConfig(public_url="http://10.0.0.1").public_url) == (
+        "http://10.0.0.1/"
+    )
 
 
 def test_loads_and_validates_relative_file_inputs(tmp_path: Path) -> None:

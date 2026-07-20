@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack
 from time import perf_counter
 from uuid import uuid4
 
@@ -23,9 +24,11 @@ from a2a_proof.models import (
     ScenarioResult,
     SuiteResult,
     TrialResult,
+    Turn,
     TurnResult,
 )
 from a2a_proof.protocol import TurnOutcome
+from a2a_proof.push import PushReceiver, PushSubscription
 
 SendTurn = Callable[..., Awaitable[TurnOutcome]]
 TaskAction = Callable[..., Awaitable[TurnOutcome]]
@@ -42,7 +45,13 @@ async def run(
     _validate_parallel_trials(max_parallel_trials)
     ensure_ap2_sdk(config)
     invariant_secrets = resolve_invariant_secrets(config, environ)
-    async with await A2ASession.connect(config.agent) as session:
+    async with AsyncExitStack() as stack:
+        session = await stack.enter_async_context(await A2ASession.connect(config.agent))
+        push_receiver = (
+            await stack.enter_async_context(PushReceiver(config.push_notifications))
+            if config.push_notifications is not None and config.uses_push_notifications
+            else None
+        )
         return await run_with_sender(
             config,
             session.send_turn,
@@ -51,6 +60,7 @@ async def run(
             card=session.card,
             invariant_secrets=invariant_secrets,
             max_parallel_trials=max_parallel_trials,
+            push_receiver=push_receiver,
         )
 
 
@@ -63,6 +73,7 @@ async def run_with_sender(
     card: AgentCard | None = None,
     invariant_secrets: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
+    push_receiver: PushReceiver | None = None,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
     ensure_ap2_sdk(config)
@@ -87,6 +98,7 @@ async def run_with_sender(
                 config,
                 secrets,
                 max_parallel_trials,
+                push_receiver,
             )
             for scenario in config.resolved_scenarios()
         ]
@@ -108,6 +120,7 @@ async def _run_scenario(
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     max_parallel_trials: int,
+    push_receiver: PushReceiver | None,
 ) -> ScenarioResult:
     if max_parallel_trials == 1:
         trials = [
@@ -119,6 +132,7 @@ async def _run_scenario(
                 get_task,
                 config,
                 invariant_secrets,
+                push_receiver,
             )
             for index in range(1, scenario.trials + 1)
         ]
@@ -135,6 +149,7 @@ async def _run_scenario(
                     get_task,
                     config,
                     invariant_secrets,
+                    push_receiver,
                 )
 
         trials = list(
@@ -161,38 +176,28 @@ async def _run_trial(
     get_task: TaskAction | None,
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
+    push_receiver: PushReceiver | None,
 ) -> TrialResult:
     started = perf_counter()
     context_id = str(uuid4())
     task_id: str | None = None
     results: list[TurnResult] = []
+    push_subscription: PushSubscription | None = None
 
     try:
         turns = scenario.resolved_turns()
         for turn_index, turn in enumerate(turns, start=1):
-            if turn.action is not None:
-                if task_id is None:
-                    raise ValueError(f"action {turn.action!r} requires a task from a prior turn")
-                operation = cancel_task if turn.action == "cancel" else get_task
-                if operation is None:
-                    raise ValueError(f"action {turn.action!r} is not available")
-                arguments: dict[str, object] = {
-                    "task_id": task_id,
-                    "context_id": context_id,
-                }
-                if turn.action == "get_task":
-                    arguments["history_length"] = turn.history_length
-                outcome = await operation(**arguments)
-            else:
-                arguments = {
-                    "data": turn.data,
-                    "files": prepare_files(turn.files, config.contract_dir),
-                    "context_id": context_id,
-                    "task_id": task_id,
-                }
-                if turn.return_immediately:
-                    arguments["return_immediately"] = True
-                outcome = await send_turn(turn.message, **arguments)
+            outcome, push_subscription = await _execute_turn(
+                turn,
+                send_turn,
+                cancel_task,
+                get_task,
+                push_receiver,
+                push_subscription,
+                config,
+                context_id,
+                task_id,
+            )
             failures = evaluate(turn.expect, outcome, contract_dir=config.contract_dir)
             invariant_failures: list[str] = []
             if config.invariants is not None:
@@ -235,6 +240,9 @@ async def _run_trial(
             turns=results,
             error=_format_error(error),
         )
+    finally:
+        if push_subscription is not None:
+            push_subscription.close()
 
     return TrialResult(
         index=index,
@@ -242,6 +250,105 @@ async def _run_trial(
         duration_ms=round((perf_counter() - started) * 1_000),
         turns=results,
     )
+
+
+async def _execute_turn(
+    turn: Turn,
+    send_turn: SendTurn,
+    cancel_task: TaskAction | None,
+    get_task: TaskAction | None,
+    push_receiver: PushReceiver | None,
+    push_subscription: PushSubscription | None,
+    config: ProofConfig,
+    context_id: str,
+    task_id: str | None,
+) -> tuple[TurnOutcome, PushSubscription | None]:
+    if turn.action is not None:
+        return await _execute_action(
+            turn,
+            cancel_task,
+            get_task,
+            push_subscription,
+            config,
+            context_id,
+            task_id,
+        )
+    return await _execute_input(
+        turn,
+        send_turn,
+        push_receiver,
+        push_subscription,
+        config,
+        context_id,
+        task_id,
+    )
+
+
+async def _execute_input(
+    turn: Turn,
+    send_turn: SendTurn,
+    push_receiver: PushReceiver | None,
+    push_subscription: PushSubscription | None,
+    config: ProofConfig,
+    context_id: str,
+    task_id: str | None,
+) -> tuple[TurnOutcome, PushSubscription | None]:
+    registered_subscription: PushSubscription | None = None
+    if turn.push_notification:
+        if push_receiver is None:
+            raise ValueError("push receiver is not available")
+        registered_subscription = push_receiver.register()
+        push_subscription = registered_subscription
+    try:
+        arguments = {
+            "data": turn.data,
+            "files": prepare_files(turn.files, config.contract_dir),
+            "context_id": context_id,
+            "task_id": task_id,
+        }
+        if turn.return_immediately:
+            arguments["return_immediately"] = True
+        if push_subscription is not None:
+            arguments["push_notification"] = push_subscription.target
+        outcome = await send_turn(turn.message, **arguments)
+        if registered_subscription is not None:
+            if outcome.task_id is None:
+                raise ValueError("push-enabled turn did not return a task ID")
+            registered_subscription.bind(
+                task_id=outcome.task_id,
+                context_id=outcome.context_id or context_id,
+            )
+        return outcome, push_subscription
+    except BaseException:
+        if registered_subscription is not None:
+            registered_subscription.close()
+        raise
+
+
+async def _execute_action(
+    turn: Turn,
+    cancel_task: TaskAction | None,
+    get_task: TaskAction | None,
+    push_subscription: PushSubscription | None,
+    config: ProofConfig,
+    context_id: str,
+    task_id: str | None,
+) -> tuple[TurnOutcome, PushSubscription | None]:
+    if task_id is None:
+        raise ValueError(f"action {turn.action!r} requires a task from a prior turn")
+    if turn.action == "await_push":
+        if push_subscription is None:
+            raise ValueError("action 'await_push' has no active push subscription")
+        outcome = await push_subscription.wait(turn.timeout_seconds or config.agent.timeout)
+        push_subscription.close()
+        return outcome, None
+    operation = cancel_task if turn.action == "cancel" else get_task
+    if operation is None:
+        raise ValueError(f"action {turn.action!r} is not available")
+    arguments: dict[str, object] = {"task_id": task_id, "context_id": context_id}
+    if turn.action == "get_task":
+        arguments["history_length"] = turn.history_length
+    return await operation(**arguments), push_subscription
 
 
 def _format_error(error: Exception) -> str:

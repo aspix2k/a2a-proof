@@ -16,6 +16,7 @@ from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.helpers import new_data_part, new_message, new_text_part
 from a2a.types import (
     AgentCard,
+    AuthenticationInfo,
     CancelTaskRequest,
     GetTaskRequest,
     Part,
@@ -24,6 +25,7 @@ from a2a.types import (
     SendMessageRequest,
     StreamResponse,
     Task,
+    TaskPushNotificationConfig,
 )
 from a2a.utils.constants import TransportProtocol
 from pydantic import JsonValue
@@ -31,6 +33,7 @@ from pydantic import JsonValue
 from a2a_proof.files import PreparedFile
 from a2a_proof.models import AgentConfig
 from a2a_proof.protocol import ProtocolError, ResponseCollector, TurnOutcome
+from a2a_proof.push import PushTarget
 
 LEGACY_AGENT_CARD_PATH = "/.well-known/agent.json"
 
@@ -138,7 +141,10 @@ class A2ASession:
         context_id: str,
         task_id: str | None,
         return_immediately: bool = False,
+        push_notification: PushTarget | None = None,
     ) -> TurnOutcome:
+        if push_notification is not None and not self.card.capabilities.push_notifications:
+            raise ProtocolError("Agent Card does not advertise push notifications")
         parts = [new_text_part(text)] if text is not None else []
         parts.extend(new_data_part(value) for value in data or [])
         parts.extend(
@@ -151,12 +157,21 @@ class A2ASession:
             task_id=task_id,
             role=Role.ROLE_USER,
         )
-        request = SendMessageRequest(
-            message=message,
-            configuration=(
-                SendMessageConfiguration(return_immediately=True) if return_immediately else None
-            ),
-        )
+        configuration: SendMessageConfiguration | None = None
+        if return_immediately or push_notification is not None:
+            configuration = SendMessageConfiguration(return_immediately=return_immediately)
+            if push_notification is not None:
+                configuration.task_push_notification_config.CopyFrom(
+                    TaskPushNotificationConfig(
+                        url=push_notification.url,
+                        token=push_notification.token,
+                        authentication=AuthenticationInfo(
+                            scheme="Bearer",
+                            credentials=push_notification.token,
+                        ),
+                    )
+                )
+        request = SendMessageRequest(message=message, configuration=configuration)
         collector = ResponseCollector(context_id)
         started = perf_counter()
         first_event_ms: int | None = None
