@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json
+
+version: 1
+
+agent:
+  url: http://localhost:3000
+  timeout: 10
+  grpc_tls: false
+  allow_cross_origin_interfaces: true
+
+card:
+  skills: {contains: echo}
+  capabilities:
+    streaming: true
+    push_notifications: false
+
+scenarios:
+  - name: echo over the selected transport
+    message: Hello from a2a-proof
+    expect:
+      state: completed
+      states: {contains_in_order: [working, completed]}
+      text: {contains: "Echo: Hello from a2a-proof"}
+
+  - name: cancel a retained task
+    turns:
+      - message: wait:cancel this task
+        return_immediately: true
+        expect: {state: working}
+      - action: cancel
+        expect: {state: canceled}

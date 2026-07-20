@@ -607,6 +607,7 @@ def test_run_json_and_exit_status(tmp_path: Path, monkeypatch) -> None:
     )
 
     async def run(config, *, max_parallel_trials):
+        assert config.agent.transport == "auto"
         assert max_parallel_trials == 1
         return suite
 
@@ -616,6 +617,24 @@ def test_run_json_and_exit_status(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert json.loads(result.output)["passed"] is False
+
+
+def test_run_overrides_transport_without_changing_contract(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    original = path.read_text(encoding="utf-8")
+
+    async def run(config, *, max_parallel_trials):
+        assert config.agent.transport == "GRPC"
+        assert max_parallel_trials == 1
+        return SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(main, ["run", str(path), "--transport", "GRPC"])
+
+    assert result.exit_code == 0
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_run_writes_requested_evidence_bundle(tmp_path: Path, monkeypatch) -> None:
@@ -828,6 +847,8 @@ scenarios:
     async def run_pair(baseline_config, candidate_config, *, max_parallel_trials):
         assert [scenario.name for scenario in baseline_config.scenarios] == ["second"]
         assert str(candidate_config.agent.url) == "https://candidate.example/"
+        assert baseline_config.agent.transport == "HTTP+JSON"
+        assert candidate_config.agent.transport == "HTTP+JSON"
         assert max_parallel_trials == 3
         return baseline, candidate
 
@@ -845,6 +866,8 @@ scenarios:
             "second",
             "--jobs",
             "3",
+            "--transport",
+            "HTTP+JSON",
             "--format",
             "json",
             "--output",

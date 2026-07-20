@@ -109,7 +109,11 @@ def test_writes_redacted_failed_trial_bundle(tmp_path: Path) -> None:
     assert manifest | {"tool": None} == {
         "schema_version": 1,
         "tool": None,
-        "execution": {"scenarios": ["smoke"], "max_parallel_trials": 1},
+        "execution": {
+            "scenarios": ["smoke"],
+            "max_parallel_trials": 1,
+            "transport": "auto",
+        },
         "passed": False,
         "duration_ms": 20,
         "contract_sha256": "contract-digest",
@@ -121,7 +125,7 @@ def test_writes_redacted_failed_trial_bundle(tmp_path: Path) -> None:
         "truncated": False,
         "records": "failures.jsonl",
     }
-    assert manifest["tool"] == {"name": "a2a-proof", "version": "0.11.0"}
+    assert manifest["tool"] == {"name": "a2a-proof", "version": "0.12.0"}
     assert manifest_text == json.dumps(manifest, indent=2) + "\n"
     assert record == {
         "kind": "trial",

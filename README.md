@@ -11,9 +11,10 @@ Black-box contract tests for A2A agents.
 `a2a-proof` discovers a deployed agent, sends real A2A requests, and checks its observable
 behavior. It needs no access to the agent's source code, framework, prompts, or model provider.
 
-The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol conformance, and the
+The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol conformance,
+[A2A ITK](https://github.com/a2aproject/a2a-itk) checks interoperability between SDKs, and the
 [A2A Inspector](https://github.com/a2aproject/a2a-inspector) supports interactive debugging.
-`a2a-proof` adds repeatable behavior and lifecycle contracts for local development and CI.
+`a2a-proof` adds repeatable contracts for the behavior of your deployed agent.
 
 It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC. The SDK compatibility layer also supports
 AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-receipt payment flows.
@@ -88,6 +89,7 @@ uvx a2a-proof diff --against https://candidate-agent.example.com
 - [Task lifecycle](docs/lifecycle.md)
 - [Push notifications](docs/push-notifications.md)
 - [AP2 contracts](docs/ap2.md)
+- [External agent showcases](docs/showcases.md)
 - [Running in development and CI](docs/operations.md)
 - [Configuration schema](schema/a2a-proof.schema.json)
 

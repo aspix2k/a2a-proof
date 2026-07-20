@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aspix2k/a2a-proof/main/schema/a2a-proof.schema.json
+
+version: 1
+
+agent:
+  url: http://localhost:3008
+  timeout: 10
+
+card:
+  skills: {contains: flight-booking}
+
+scenarios:
+  - name: resume an interrupted task
+    turns:
+      - message: book a flight
+        expect:
+          state: input_required
+          text: {contains: "Where would you like to fly?"}
+      - message: Helsinki
+        expect:
+          state: completed
+          text:
+            contains:
+              - Booked flight to Helsinki.
+              - "original request: book a flight"
+              - "confirmed answer: Helsinki"

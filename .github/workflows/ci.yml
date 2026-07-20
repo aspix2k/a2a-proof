@@ -31,7 +31,11 @@ jobs:
       - run: uv run --frozen python scripts/generate_schema.py --check
       - run: uv run --frozen zizmor --persona=pedantic --offline --strict-collection .
       - run: uv run --frozen pytest --cov=a2a_proof --cov-report=term-missing
-      - run: uv run --frozen a2a-proof check examples/official-helloworld.yaml
+      - name: Validate examples
+        run: |
+          for config in examples/*.yaml; do
+            uv run --frozen a2a-proof check "$config"
+          done
       - run: uv build
       - run: uv run --frozen twine check dist/*
       - run: uvx --from dist/*.whl a2a-proof --help
