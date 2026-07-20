@@ -45,4 +45,6 @@ Update the version in `pyproject.toml`, refresh `uv.lock`, and move the changelo
 not use generated commit lists or vague summaries. After CI passes on `main`, create and push the
 matching `vX.Y.Z` tag. The release workflow requires that version's changelog section, rebuilds
 and tests the package, verifies the tag version, publishes through PyPI Trusted Publishing, records
-build provenance, and publishes immutable GitHub release assets. Never move or reuse a release tag.
+build provenance, and prepares a titled draft with the release assets. The repository owner checks
+the Marketplace metadata and categories before publishing the immutable GitHub release. Never move
+or reuse a release tag.

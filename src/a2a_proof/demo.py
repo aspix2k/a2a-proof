@@ -157,7 +157,7 @@ async def run_demo(*, intentional_failure: bool = False) -> SuiteResult:
                 ],
             }
         )
-        return await run(config)
+        return await run(config, _trust_env=False)
     finally:
         await asyncio.to_thread(server.shutdown)
         server.server_close()

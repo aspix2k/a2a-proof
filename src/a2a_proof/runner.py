@@ -41,12 +41,15 @@ async def run(
     *,
     environ: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
+    _trust_env: bool = True,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
     ensure_ap2_sdk(config)
     invariant_secrets = resolve_invariant_secrets(config, environ)
     async with AsyncExitStack() as stack:
-        session = await stack.enter_async_context(await A2ASession.connect(config.agent))
+        session = await stack.enter_async_context(
+            await A2ASession.connect(config.agent, trust_env=_trust_env)
+        )
         push_receiver = (
             await stack.enter_async_context(PushReceiver(config.push_notifications))
             if config.push_notifications is not None and config.uses_push_notifications

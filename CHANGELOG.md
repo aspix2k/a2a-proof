@@ -7,6 +7,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.14.1 - 2026-07-21
+
+### Bug fixes
+
+- Made the loopback demo ignore proxy environment variables. It now stays local even when a
+  corporate proxy is configured without a localhost exception; normal agent runs remain
+  proxy-aware.
+
+### Documentation
+
+- Linked the `uv` installation instructions and updated the Action example to v0.14.1.
+
+### Maintenance
+
+- Changed the release workflow to prepare a titled draft with assets after PyPI publication, so
+  Marketplace metadata and categories can be reviewed before publishing. CONTRIBUTING documents
+  the manual step.
+- Kept the live proxy regression in normal CI but outside mutmut's instrumented test selection;
+  the new runner path kills all four of its generated mutants.
+
 ## 0.14.0 - 2026-07-21
 
 ### Security

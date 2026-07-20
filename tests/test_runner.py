@@ -709,8 +709,9 @@ async def test_run_defaults_to_sequential_trials(monkeypatch: pytest.MonkeyPatch
 
     config = _config([{"name": "default", "message": "hello", "trials": 2}])
 
-    async def connect(agent: object) -> Session:
+    async def connect(agent: object, *, trust_env: bool) -> Session:
         assert agent is config.agent
+        assert trust_env is True
         return Session()
 
     monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
@@ -753,8 +754,9 @@ async def test_run_does_not_open_unused_push_receiver(monkeypatch: pytest.Monkey
         }
     )
 
-    async def connect(agent: object) -> Session:
+    async def connect(agent: object, *, trust_env: bool) -> Session:
         assert agent is config.agent
+        assert trust_env is True
         return Session()
 
     def unexpected_receiver(config: object) -> None:
@@ -826,8 +828,9 @@ async def test_run_wires_card_lifecycle_and_parallelism(monkeypatch: pytest.Monk
         }
     )
 
-    async def connect(agent: object) -> Session:
+    async def connect(agent: object, *, trust_env: bool) -> Session:
         assert agent is config.agent
+        assert trust_env is True
         return Session()
 
     monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
@@ -894,8 +897,9 @@ async def test_run_wires_task_subscription_for_all_trial_modes(
         ]
     )
 
-    async def connect(agent: object) -> Session:
+    async def connect(agent: object, *, trust_env: bool) -> Session:
         assert agent is config.agent
+        assert trust_env is True
         return Session()
 
     monkeypatch.setattr(runner_module.A2ASession, "connect", connect)
@@ -930,7 +934,8 @@ async def test_run_uses_explicit_environment_for_invariant_secrets(
         async def subscribe_task(self, **context: object) -> TurnOutcome:
             raise AssertionError("not called")
 
-    async def connect(agent: object) -> Session:
+    async def connect(agent: object, *, trust_env: bool) -> Session:
+        assert trust_env is True
         return Session()
 
     config = ProofConfig.model_validate(

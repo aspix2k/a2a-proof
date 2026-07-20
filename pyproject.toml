@@ -1,6 +1,6 @@
 [project]
 name = "a2a-proof"
-version = "0.14.0"
+version = "0.14.1"
 description = "Black-box contract tests for A2A agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -109,6 +109,6 @@ pytest_add_cli_args_test_selection = [
   "--ignore",
   "tests/test_e2e.py",
   "-k",
-  "not test_session_reports_timeout and not test_demo_runs_real_contract and not test_demo_can_show_failure_diagnostics",
+  "not test_session_reports_timeout and not test_demo_runs_real_contract and not test_demo_can_show_failure_diagnostics and not test_demo_ignores_proxy_environment",
 ]
 mutate_only_covered_lines = true

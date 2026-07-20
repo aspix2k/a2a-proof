@@ -1366,7 +1366,11 @@ async def test_connect_closes_resources_when_lifecycle_client_creation_fails(
     factory.return_value.create.side_effect = [primary_client, RuntimeError("factory failed")]
     card = AgentCard(name="Agent", capabilities=AgentCapabilities(streaming=True))
 
-    monkeypatch.setattr(a2a_module, "_http_client", lambda config: next(clients))
+    monkeypatch.setattr(
+        a2a_module,
+        "_http_client",
+        lambda config, *, trust_env: next(clients),
+    )
     monkeypatch.setattr(a2a_module, "_resolve_card", AsyncMock(return_value=card))
     monkeypatch.setattr(a2a_module, "ClientFactory", factory)
 
@@ -1394,7 +1398,11 @@ async def test_connect_closes_both_clients_when_session_construction_fails(
         def __init__(self, *args: object, **kwargs: object) -> None:
             raise RuntimeError("construction failed")
 
-    monkeypatch.setattr(a2a_module, "_http_client", lambda config: next(clients))
+    monkeypatch.setattr(
+        a2a_module,
+        "_http_client",
+        lambda config, *, trust_env: next(clients),
+    )
     monkeypatch.setattr(a2a_module, "_resolve_card", AsyncMock(return_value=card))
     monkeypatch.setattr(a2a_module, "ClientFactory", factory)
 
@@ -1412,7 +1420,11 @@ async def test_connect_closes_http_client_after_failure(monkeypatch: pytest.Monk
     async def fail(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("discovery failed")
 
-    monkeypatch.setattr(a2a_module, "_http_client", lambda config: http_client)
+    monkeypatch.setattr(
+        a2a_module,
+        "_http_client",
+        lambda config, *, trust_env: http_client,
+    )
     monkeypatch.setattr(a2a_module, "_resolve_card", fail)
 
     with pytest.raises(RuntimeError, match="discovery failed"):
@@ -1429,7 +1441,11 @@ async def test_connect_closes_http_client_after_cancellation(
     async def cancel(*args: Any, **kwargs: Any) -> None:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(a2a_module, "_http_client", lambda config: http_client)
+    monkeypatch.setattr(
+        a2a_module,
+        "_http_client",
+        lambda config, *, trust_env: http_client,
+    )
     monkeypatch.setattr(a2a_module, "_resolve_card", cancel)
 
     with pytest.raises(asyncio.CancelledError):
