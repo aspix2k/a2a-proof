@@ -64,7 +64,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
 
   publish:
-    name: Publish GitHub release
+    name: Prepare GitHub release
     needs: [build, pypi]
     runs-on: ubuntu-latest
     permissions:
@@ -102,12 +102,14 @@ jobs:
             section && /^- / { entry = 1 }
             END { if (!section || !entry) exit 1 }
           ' release-notes.md
-      - name: Create GitHub release
+      - name: Create draft GitHub release
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "$GITHUB_REF_NAME" dist/*
           --notes-file release-notes.md
+          --title "$GITHUB_REF_NAME"
+          --draft
           --verify-tag
           --fail-on-no-commits

@@ -53,6 +53,18 @@ def test_demo_can_show_failure_diagnostics() -> None:
     assert "1 scenario failed" in result.output
 
 
+def test_demo_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    result = CliRunner().invoke(main, ["demo"])
+
+    assert result.exit_code == 0
+    assert "1 scenario passed" in result.output
+
+
 def test_demo_reports_setup_errors_without_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fail(*, intentional_failure: bool):
         assert intentional_failure is False
@@ -217,8 +229,9 @@ async def test_run_demo_builds_bounded_contract(
 ) -> None:
     expected_result = SuiteResult(passed=True, duration_ms=1, scenarios=[])
 
-    async def inspect(config, *, max_parallel_trials=1):
+    async def inspect(config, *, max_parallel_trials=1, _trust_env=True):
         assert max_parallel_trials == 1
+        assert _trust_env is False
         assert str(config.agent.url).startswith("http://127.0.0.1:")
         assert config.agent.timeout == 30
         scenario = config.scenarios[0]

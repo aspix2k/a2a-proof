@@ -56,8 +56,8 @@ class A2ASession:
         self._service_parameters = _service_parameters(headers or {}, extensions or [])
 
     @classmethod
-    async def connect(cls, config: AgentConfig) -> A2ASession:
-        http_client = _http_client(config)
+    async def connect(cls, config: AgentConfig, *, trust_env: bool = True) -> A2ASession:
+        http_client = _http_client(config, trust_env=trust_env)
         lifecycle_http_client: httpx.AsyncClient | None = None
         client: Client | None = None
         lifecycle_client: Client | None = None
@@ -85,7 +85,7 @@ class A2ASession:
             client = ClientFactory(client_config).create(card)
             lifecycle_client = client
             if card.capabilities.streaming:
-                lifecycle_http_client = _http_client(config)
+                lifecycle_http_client = _http_client(config, trust_env=trust_env)
                 lifecycle_config = ClientConfig(
                     streaming=False,
                     httpx_client=lifecycle_http_client,
@@ -287,11 +287,12 @@ async def discover_agent(
         return card
 
 
-def _http_client(config: AgentConfig) -> httpx.AsyncClient:
+def _http_client(config: AgentConfig, *, trust_env: bool = True) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         headers=config.headers,
         timeout=httpx.Timeout(config.timeout),
         follow_redirects=False,
+        trust_env=trust_env,
     )
 
 

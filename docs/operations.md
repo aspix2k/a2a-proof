@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: aspix2k/a2a-proof@v0.14.0
+      - uses: aspix2k/a2a-proof@v0.14.1
         with:
           config: contracts/a2a-proof.yaml
 ```
