@@ -7,6 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## 0.15.0 - 2026-07-25
+
 ### Features
 
 - Added delegation contracts. A `downstream` block runs a recording A2A agent, `{{downstream_url}}`
@@ -15,7 +17,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   secret reached it. This checks what the agent sends rather than what it answers, so an
   orchestrator that stopped calling its specialist, or that forwards its caller's `Authorization`
   header downstream, fails the contract. Delegation checks require sequential trials.
-
 - Added a statistical `pass_rate`. `pass_rate: {min: 0.8, confidence: 0.95}` passes a scenario only
   when the one-sided Wilson lower bound of the observed success rate reaches `min`, so a contract
   states a claim about the agent rather than about the sample it happened to draw. A configuration
