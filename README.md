@@ -102,7 +102,7 @@ uvx a2a-proof record --output cassette.json && uvx a2a-proof run --replay casset
 After checking out the repository, one step runs its default contract as a CI check:
 
 ```yaml
-- uses: aspix2k/a2a-proof@v0.15.0
+- uses: aspix2k/a2a-proof@v0.16.0
 ```
 
 Set `config` only when the contract is not `a2a-proof.yaml`.
