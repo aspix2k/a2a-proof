@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Sequence
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from statistics import NormalDist
 from typing import Annotated, Literal, Self
 
 import regex
@@ -499,12 +501,63 @@ class AP2ReceiptExpectation(StrictModel):
 AP2Expectation = AP2MandateExpectation | AP2ReceiptExpectation
 
 
+class DelegationExpectation(StrictModel):
+    count: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Exact number of downstream calls the turn must make.",
+    )
+    text: TextExpectation | None = Field(
+        default=None,
+        description="Checks for the text one downstream call must carry.",
+    )
+    data: list[DataExpectation] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Structured checks for the data one downstream call must carry.",
+    )
+    not_contains_env: list[EnvironmentName] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Environment variables whose values must not reach the downstream agent.",
+    )
+
+    @field_validator(
+        "data",
+        mode="before",
+        json_schema_input_type=DataExpectation | list[DataExpectation],
+    )
+    @classmethod
+    def accept_single_data_expectation(cls, value: object) -> object:
+        return [value] if isinstance(value, (dict, DataExpectation)) else value
+
+    @field_validator(
+        "not_contains_env",
+        mode="before",
+        json_schema_input_type=str | list[str],
+    )
+    @classmethod
+    def accept_single_value(cls, value: object) -> object:
+        return [value] if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_check(self) -> Self:
+        if self.count is None and self.text is None and not self.data and not self.not_contains_env:
+            raise ValueError("delegation must define count, text, data, or not_contains_env")
+        return self
+
+
 class Expectation(StrictModel):
     state: str | None = Field(
         default=None,
         min_length=1,
         max_length=64,
         description="Required terminal A2A state.",
+    )
+    delegation: DelegationExpectation | None = Field(
+        default=None,
+        description="Checks for the calls the agent makes to the recording downstream agent.",
     )
     text: TextExpectation | None = Field(default=None, description="Response text checks.")
     states: StateSequenceExpectation | None = Field(
@@ -701,6 +754,20 @@ class LatencyExpectation(StrictModel):
         return self
 
 
+class PassRateExpectation(StrictModel):
+    min: Annotated[
+        float,
+        Field(gt=0, lt=1, description="Success probability the trials must prove."),
+    ]
+    confidence: Annotated[
+        float,
+        Field(ge=0.5, lt=1, description="Confidence level of the one-sided Wilson lower bound."),
+    ] = 0.95
+
+
+PassRate = Annotated[float, Field(gt=0, le=1)] | PassRateExpectation
+
+
 class Scenario(StrictModel):
     name: Annotated[
         str,
@@ -726,11 +793,9 @@ class Scenario(StrictModel):
     ) = None
     expect: Expectation = Field(default_factory=Expectation, description="Single-turn response.")
     trials: int = Field(default=1, ge=1, le=100, description="Independent repetitions.")
-    pass_rate: float = Field(
+    pass_rate: PassRate = Field(
         default=1.0,
-        gt=0,
-        le=1,
-        description="Minimum successful trial fraction.",
+        description="Minimum successful trial fraction, or a statistical gate.",
     )
     latency: LatencyExpectation | None = Field(
         default=None,
@@ -781,14 +846,23 @@ class Scenario(StrictModel):
             return self.turns
         return [Turn(message=self.message, data=self.data, files=self.files, expect=self.expect)]
 
+    @property
+    def required_trials(self) -> int:
+        if not isinstance(self.pass_rate, PassRateExpectation):
+            return math.ceil(self.trials * self.pass_rate)
+        return next(
+            successes
+            for successes in range(self.trials + 1)
+            if wilson_lower_bound(successes, self.trials, self.pass_rate.confidence)
+            >= self.pass_rate.min
+        )
+
 
 class ScenarioDefaults(StrictModel):
     trials: int = Field(default=1, ge=1, le=100, description="Default independent repetitions.")
-    pass_rate: float = Field(
+    pass_rate: PassRate = Field(
         default=1.0,
-        gt=0,
-        le=1,
-        description="Default minimum successful trial fraction.",
+        description="Default minimum successful trial fraction, or a statistical gate.",
     )
 
 
@@ -813,27 +887,66 @@ class PushNotificationsConfig(StrictModel):
     @field_validator("listen_host")
     @classmethod
     def validate_listen_host(cls, host: str) -> str:
-        address = ip_address(host)
-        if address.is_multicast:
-            raise ValueError("listen_host cannot be multicast")
-        return address.compressed
+        return _validate_listen_host(host)
 
     @model_validator(mode="after")
     def validate_public_url(self) -> Self:
-        listen_address = ip_address(self.listen_host)
-        if self.public_url is None:
-            if listen_address.is_unspecified or not _is_local_http_host(self.listen_host):
-                raise ValueError("public_url is required for a non-local listen_host")
-            return self
-        url = self.public_url
-        if url.username is not None or url.password is not None:
-            raise ValueError("public_url must not contain credentials")
-        if url.query is not None or url.fragment is not None:
-            raise ValueError("public_url must not contain a query or fragment")
-        if url.host is None:
-            raise ValueError("public_url must contain a host")
-        if url.scheme == "http" and not _is_local_http_host(url.host):
-            raise ValueError("non-local public_url must use HTTPS")
+        _validate_public_listener(self.listen_host, self.public_url)
+        return self
+
+
+class DownstreamReply(StrictModel):
+    text: NonEmptyText | None = Field(
+        default=None,
+        description="Text the downstream agent answers with.",
+    )
+    data: JsonValue | None = Field(
+        default=None,
+        description="Structured value the downstream agent answers with.",
+    )
+
+
+class DownstreamConfig(StrictModel):
+    listen_host: str = Field(
+        default="127.0.0.1",
+        min_length=1,
+        max_length=64,
+        description="Literal IP address for the local downstream listener.",
+    )
+    listen_port: int = Field(
+        default=0,
+        ge=0,
+        le=65_535,
+        description="Local listener port; zero selects an available port.",
+    )
+    public_url: HttpUrl | None = Field(
+        default=None,
+        description="Externally reachable base URL; local listener URL by default.",
+    )
+    name: str = Field(
+        default="a2a-proof downstream",
+        min_length=1,
+        max_length=200,
+        description="Agent Card name the downstream agent advertises.",
+    )
+    skills: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Skill IDs the downstream agent advertises.",
+    )
+    reply: DownstreamReply = Field(
+        default_factory=DownstreamReply,
+        description="Response the downstream agent returns for every call.",
+    )
+
+    @field_validator("listen_host")
+    @classmethod
+    def validate_listen_host(cls, host: str) -> str:
+        return _validate_listen_host(host)
+
+    @model_validator(mode="after")
+    def validate_public_url(self) -> Self:
+        _validate_public_listener(self.listen_host, self.public_url)
         return self
 
 
@@ -922,6 +1035,10 @@ class ProofConfig(StrictModel):
         default=None,
         description="Local receiver settings for push-notification scenarios.",
     )
+    downstream: DownstreamConfig | None = Field(
+        default=None,
+        description="Recording agent the tested agent can delegate work to.",
+    )
     scenarios: Annotated[
         list[Scenario],
         Field(min_length=1, max_length=1_000, description="Behavior contracts to run."),
@@ -950,6 +1067,30 @@ class ProofConfig(StrictModel):
             raise ValueError("push_notifications settings are required for push scenarios")
         return self
 
+    @model_validator(mode="after")
+    def require_provable_pass_rates(self) -> Self:
+        for scenario in self.resolved_scenarios():
+            expectation = scenario.pass_rate
+            if not isinstance(expectation, PassRateExpectation):
+                continue
+            if (
+                wilson_lower_bound(scenario.trials, scenario.trials, expectation.confidence)
+                < expectation.min
+            ):
+                minimum = minimum_provable_trials(expectation.min, expectation.confidence)
+                raise ValueError(
+                    f"scenario {scenario.name!r} cannot prove a pass rate of {expectation.min:g} "
+                    f"at {expectation.confidence:g} confidence with {scenario.trials} trials; "
+                    f"use at least {minimum}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def require_downstream_agent(self) -> Self:
+        if self.uses_delegation and self.downstream is None:
+            raise ValueError("downstream settings are required for delegation scenarios")
+        return self
+
     @property
     def uses_push_notifications(self) -> bool:
         return any(
@@ -957,6 +1098,25 @@ class ProofConfig(StrictModel):
             for scenario in self.scenarios
             for turn in scenario.resolved_turns()
         )
+
+    @property
+    def uses_delegation(self) -> bool:
+        return any(
+            turn.expect.delegation is not None
+            for scenario in self.scenarios
+            for turn in scenario.resolved_turns()
+        )
+
+    @property
+    def delegation_environment_names(self) -> list[str]:
+        names = [
+            name
+            for scenario in self.scenarios
+            for turn in scenario.resolved_turns()
+            if turn.expect.delegation is not None
+            for name in turn.expect.delegation.not_contains_env
+        ]
+        return list(dict.fromkeys(names))
 
     @property
     def contract_dir(self) -> Path:
@@ -1057,6 +1217,7 @@ class ScenarioResult(StrictModel):
     required_trials: int
     trials: list[TrialResult]
     latency: LatencyResult | None = None
+    pass_rate_lower_bound: float | None = None
 
 
 class SuiteResult(StrictModel):
@@ -1079,6 +1240,40 @@ class DiffResult(StrictModel):
     baseline: SuiteResult
     candidate: SuiteResult
     checks: list[DiffCheck]
+
+
+def wilson_lower_bound(successes: int, trials: int, confidence: float) -> float:
+    z = NormalDist().inv_cdf(confidence)
+    center = successes + z**2 / 2
+    spread = z * math.sqrt(successes * (trials - successes) / trials + z**2 / 4)
+    return max(0.0, (center - spread) / (trials + z**2))
+
+
+def minimum_provable_trials(minimum: float, confidence: float) -> int:
+    trials = 1
+    while wilson_lower_bound(trials, trials, confidence) < minimum:
+        trials += 1
+    return trials
+
+
+def _validate_listen_host(host: str) -> str:
+    address = ip_address(host)
+    if address.is_multicast:
+        raise ValueError("listen_host cannot be multicast")
+    return address.compressed
+
+
+def _validate_public_listener(listen_host: str, public_url: HttpUrl | None) -> None:
+    if public_url is None:
+        if ip_address(listen_host).is_unspecified or not _is_local_http_host(listen_host):
+            raise ValueError("public_url is required for a non-local listen_host")
+        return
+    if public_url.username is not None or public_url.password is not None:
+        raise ValueError("public_url must not contain credentials")
+    if public_url.query is not None or public_url.fragment is not None:
+        raise ValueError("public_url must not contain a query or fragment")
+    if public_url.scheme == "http" and not _is_local_http_host(public_url.host or ""):
+        raise ValueError("non-local public_url must use HTTPS")
 
 
 def _is_local_http_host(host: str) -> bool:

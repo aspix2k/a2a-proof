@@ -216,6 +216,24 @@ def test_indents_multiline_verbose_responses() -> None:
     assert "  response: first\n            second" in console.export_text()
 
 
+def test_reports_the_proven_pass_rate_bound_and_the_missing_trials() -> None:
+    console = Console(record=True, color_system=None, width=100)
+    proven = _result(passed=True)
+    proven.scenarios[0].pass_rate_lower_bound = 0.804
+
+    render_terminal(proven, console, verbose=False)
+
+    short = _result(passed=False)
+    short.scenarios[0].trials.append(TrialResult(index=2, passed=True, duration_ms=1))
+    short.scenarios[0].required_trials = 2
+
+    render_terminal(short, console, verbose=False)
+
+    output = console.export_text()
+    assert "p≥0.80" in output
+    assert "pass rate: 0/2 trials passed; 2 required" in output
+
+
 def test_renders_machine_readable_json() -> None:
     result = _result(passed=True)
     result.agent_card_sha256 = "private-evidence-metadata"

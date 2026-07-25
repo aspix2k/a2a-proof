@@ -11,14 +11,21 @@ from a2a.types import AgentCard
 
 from a2a_proof.a2a import A2ASession
 from a2a_proof.ap2 import ensure_ap2_sdk, redact_ap2
-from a2a_proof.assertions import evaluate, evaluate_card, evaluate_invariants
-from a2a_proof.config import resolve_invariant_secrets
+from a2a_proof.assertions import (
+    evaluate,
+    evaluate_card,
+    evaluate_delegation,
+    evaluate_invariants,
+)
+from a2a_proof.config import resolve_secret_values
+from a2a_proof.downstream import DownstreamAgent, resolve_downstream_url
 from a2a_proof.evidence import agent_card_sha256
 from a2a_proof.files import prepare_files
 from a2a_proof.models import (
     CardResult,
     LatencyExpectation,
     LatencyResult,
+    PassRateExpectation,
     ProofConfig,
     Scenario,
     ScenarioResult,
@@ -26,6 +33,7 @@ from a2a_proof.models import (
     TrialResult,
     Turn,
     TurnResult,
+    wilson_lower_bound,
 )
 from a2a_proof.protocol import TurnOutcome
 from a2a_proof.push import PushReceiver, PushSubscription
@@ -41,11 +49,13 @@ async def run(
     *,
     environ: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
+    early_stop: bool = False,
     _trust_env: bool = True,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
+    _validate_delegation_concurrency(config, max_parallel_trials)
     ensure_ap2_sdk(config)
-    invariant_secrets = resolve_invariant_secrets(config, environ)
+    invariant_secrets = resolve_secret_values(config, environ)
     async with AsyncExitStack() as stack:
         session = await stack.enter_async_context(
             await A2ASession.connect(config.agent, trust_env=_trust_env)
@@ -53,6 +63,11 @@ async def run(
         push_receiver = (
             await stack.enter_async_context(PushReceiver(config.push_notifications))
             if config.push_notifications is not None and config.uses_push_notifications
+            else None
+        )
+        downstream = (
+            await stack.enter_async_context(DownstreamAgent(config.downstream))
+            if config.downstream is not None and config.uses_delegation
             else None
         )
         return await run_with_sender(
@@ -64,7 +79,9 @@ async def run(
             card=session.card,
             invariant_secrets=invariant_secrets,
             max_parallel_trials=max_parallel_trials,
+            early_stop=early_stop,
             push_receiver=push_receiver,
+            downstream=downstream,
         )
 
 
@@ -78,9 +95,12 @@ async def run_with_sender(
     card: AgentCard | None = None,
     invariant_secrets: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
+    early_stop: bool = False,
     push_receiver: PushReceiver | None = None,
+    downstream: DownstreamAgent | None = None,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
+    _validate_delegation_concurrency(config, max_parallel_trials)
     ensure_ap2_sdk(config)
     started = perf_counter()
     card_result: CardResult | None = None
@@ -91,9 +111,7 @@ async def run_with_sender(
         card_result = CardResult(passed=not failures, failures=failures)
     scenarios = []
     if card_result is None or card_result.passed:
-        secrets = (
-            resolve_invariant_secrets(config) if invariant_secrets is None else invariant_secrets
-        )
+        secrets = resolve_secret_values(config) if invariant_secrets is None else invariant_secrets
         scenarios = [
             await _run_scenario(
                 scenario,
@@ -104,7 +122,9 @@ async def run_with_sender(
                 config,
                 secrets,
                 max_parallel_trials,
+                early_stop,
                 push_receiver,
+                downstream,
             )
             for scenario in config.resolved_scenarios()
         ]
@@ -127,23 +147,35 @@ async def _run_scenario(
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     max_parallel_trials: int,
+    early_stop: bool,
     push_receiver: PushReceiver | None,
+    downstream: DownstreamAgent | None,
 ) -> ScenarioResult:
+    required_trials = scenario.required_trials
+    tolerated_failures = scenario.trials - required_trials
     if max_parallel_trials == 1:
-        trials = [
-            await _run_trial(
-                index,
-                scenario,
-                send_turn,
-                cancel_task,
-                get_task,
-                subscribe_task,
-                config,
-                invariant_secrets,
-                push_receiver,
+        trials = []
+        for index in range(1, scenario.trials + 1):
+            trials.append(
+                await _run_trial(
+                    index,
+                    scenario,
+                    send_turn,
+                    cancel_task,
+                    get_task,
+                    subscribe_task,
+                    config,
+                    invariant_secrets,
+                    push_receiver,
+                    downstream,
+                )
             )
-            for index in range(1, scenario.trials + 1)
-        ]
+            if (
+                early_stop
+                and scenario.latency is None
+                and sum(not trial.passed for trial in trials) > tolerated_failures
+            ):
+                break
     else:
         semaphore = asyncio.Semaphore(max_parallel_trials)
 
@@ -159,13 +191,13 @@ async def _run_scenario(
                     config,
                     invariant_secrets,
                     push_receiver,
+                    downstream,
                 )
 
         trials = list(
             await asyncio.gather(*(run_trial(index) for index in range(1, scenario.trials + 1)))
         )
     passed_trials = sum(trial.passed for trial in trials)
-    required_trials = math.ceil(scenario.trials * scenario.pass_rate)
     latency = _evaluate_latency(scenario.latency, trials) if scenario.latency is not None else None
     return ScenarioResult(
         name=scenario.name,
@@ -174,6 +206,7 @@ async def _run_scenario(
         required_trials=required_trials,
         trials=trials,
         latency=latency,
+        pass_rate_lower_bound=_pass_rate_lower_bound(scenario, passed_trials, len(trials)),
     )
 
 
@@ -187,6 +220,7 @@ async def _run_trial(
     config: ProofConfig,
     invariant_secrets: Mapping[str, str],
     push_receiver: PushReceiver | None,
+    downstream: DownstreamAgent | None,
 ) -> TrialResult:
     started = perf_counter()
     context_id = str(uuid4())
@@ -197,6 +231,7 @@ async def _run_trial(
     try:
         turns = scenario.resolved_turns()
         for turn_index, turn in enumerate(turns, start=1):
+            recorded_calls = downstream.recorded() if downstream is not None else 0
             outcome, push_subscription = await _execute_turn(
                 turn,
                 send_turn,
@@ -208,8 +243,19 @@ async def _run_trial(
                 config,
                 context_id,
                 task_id,
+                downstream,
             )
             failures = evaluate(turn.expect, outcome, contract_dir=config.contract_dir)
+            if turn.expect.delegation is not None:
+                if downstream is None:
+                    raise ValueError("delegation checks require a running downstream agent")
+                failures.extend(
+                    evaluate_delegation(
+                        turn.expect.delegation,
+                        downstream.calls_since(recorded_calls),
+                        invariant_secrets,
+                    )
+                )
             invariant_failures: list[str] = []
             if config.invariants is not None:
                 invariant_failures = evaluate_invariants(
@@ -274,6 +320,7 @@ async def _execute_turn(
     config: ProofConfig,
     context_id: str,
     task_id: str | None,
+    downstream: DownstreamAgent | None,
 ) -> tuple[TurnOutcome, PushSubscription | None]:
     if turn.action is not None:
         return await _execute_action(
@@ -294,6 +341,7 @@ async def _execute_turn(
         config,
         context_id,
         task_id,
+        downstream,
     )
 
 
@@ -305,6 +353,7 @@ async def _execute_input(
     config: ProofConfig,
     context_id: str,
     task_id: str | None,
+    downstream: DownstreamAgent | None,
 ) -> tuple[TurnOutcome, PushSubscription | None]:
     registered_subscription: PushSubscription | None = None
     if turn.push_notification:
@@ -313,8 +362,9 @@ async def _execute_input(
         registered_subscription = push_receiver.register()
         push_subscription = registered_subscription
     try:
+        url = downstream.url if downstream is not None else None
         arguments = {
-            "data": turn.data,
+            "data": turn.data if url is None else resolve_downstream_url(turn.data, url),
             "files": prepare_files(turn.files, config.contract_dir),
             "context_id": context_id,
             "task_id": task_id,
@@ -323,7 +373,10 @@ async def _execute_input(
             arguments["return_immediately"] = True
         if push_subscription is not None:
             arguments["push_notification"] = push_subscription.target
-        outcome = await send_turn(turn.message, **arguments)
+        message = turn.message
+        if message is not None and url is not None:
+            message = resolve_downstream_url(message, url)
+        outcome = await send_turn(message, **arguments)
         if registered_subscription is not None:
             if outcome.task_id is None:
                 raise ValueError("push-enabled turn did not return a task ID")
@@ -368,6 +421,17 @@ async def _execute_action(
     if turn.action == "get_task":
         arguments["history_length"] = turn.history_length
     return await operation(**arguments), push_subscription
+
+
+def _pass_rate_lower_bound(
+    scenario: Scenario,
+    passed_trials: int,
+    completed_trials: int,
+) -> float | None:
+    expectation = scenario.pass_rate
+    if not isinstance(expectation, PassRateExpectation) or completed_trials != scenario.trials:
+        return None
+    return round(wilson_lower_bound(passed_trials, completed_trials, expectation.confidence), 4)
 
 
 def _format_error(error: Exception) -> str:
@@ -420,3 +484,11 @@ def _percentile(values: list[int], percentile: float) -> int:
 def _validate_parallel_trials(value: int) -> None:
     if not 1 <= value <= MAX_PARALLEL_TRIALS:
         raise ValueError(f"max_parallel_trials must be between 1 and {MAX_PARALLEL_TRIALS}")
+
+
+def _validate_delegation_concurrency(config: ProofConfig, max_parallel_trials: int) -> None:
+    if max_parallel_trials > 1 and config.uses_delegation:
+        raise ValueError(
+            "delegation checks require sequential trials because concurrent trials "
+            "cannot be attributed to one turn"
+        )

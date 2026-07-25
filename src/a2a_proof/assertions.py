@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import regex
@@ -11,10 +11,12 @@ from jsonschema.exceptions import best_match
 from pydantic import JsonValue
 
 from a2a_proof.ap2 import evaluate_ap2
+from a2a_proof.downstream import SEND_METHODS, DownstreamCall
 from a2a_proof.models import (
     AgentCardExpectation,
     DataExpectation,
     DataPartResult,
+    DelegationExpectation,
     Expectation,
     FileExpectation,
     FilePartResult,
@@ -134,6 +136,53 @@ def evaluate_invariants(
         if needle in actual:
             failures.append(f"response text contains value from environment variable {name!r}")
     return failures
+
+
+def evaluate_delegation(
+    expectation: DelegationExpectation,
+    calls: Sequence[DownstreamCall],
+    secret_values: Mapping[str, str],
+) -> list[str]:
+    failures: list[str] = []
+    if expectation.count is not None and len(calls) != expectation.count:
+        failures.append(f"expected {expectation.count} downstream call(s), got {len(calls)}")
+    unsupported = sorted({call.method for call in calls if call.method not in SEND_METHODS})
+    if unsupported:
+        failures.append(
+            f"downstream agent received unsupported method(s): {', '.join(unsupported)}"
+        )
+    for name in expectation.not_contains_env:
+        value = secret_values[name]
+        if any(value in call.body or _in_headers(value, call) for call in calls):
+            failures.append(f"downstream call contains value from environment variable {name!r}")
+    if expectation.text is None and not expectation.data:
+        return failures
+    if not calls:
+        failures.append("agent made no downstream call to check")
+        return failures
+    matches = [call for call in calls if not _delegation_content_failures(expectation, call)]
+    if not matches:
+        failures.extend(_delegation_content_failures(expectation, calls[0]))
+    return failures
+
+
+def _delegation_content_failures(
+    expectation: DelegationExpectation,
+    call: DownstreamCall,
+) -> list[str]:
+    failures: list[str] = []
+    if expectation.text is not None:
+        failures.extend(_evaluate_text(expectation.text, call.text))
+    parts = tuple(
+        DataPartResult(source="message", value=value, media_type="application/json")
+        for value in call.data
+    )
+    failures.extend(_evaluate_data(expectation.data, parts))
+    return [f"downstream call: {failure.removeprefix('response ')}" for failure in failures]
+
+
+def _in_headers(value: str, call: DownstreamCall) -> bool:
+    return any(value in header_value for _, header_value in call.headers)
 
 
 def _missing_values(

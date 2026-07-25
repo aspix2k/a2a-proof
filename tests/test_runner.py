@@ -22,6 +22,7 @@ from a2a_proof.models import (
 from a2a_proof.protocol import TurnOutcome
 from a2a_proof.push import PushReceiver, PushTarget
 from a2a_proof.runner import (
+    SendTurn,
     _evaluate_latency,
     _execute_action,
     _format_error,
@@ -575,6 +576,100 @@ async def test_applies_trials_and_pass_rate() -> None:
     assert result.passed
     assert scenario.passed_trials == 2
     assert scenario.required_trials == 2
+
+
+def _counting_sender(outcomes: Iterator[str]) -> tuple[list[str], SendTurn]:
+    sent: list[str] = []
+
+    async def send_turn(message: str | None, **context: object) -> TurnOutcome:
+        sent.append(str(message))
+        return TurnOutcome(
+            state="completed",
+            text=next(outcomes),
+            task_id=None,
+            context_id=str(context["context_id"]),
+            duration_ms=1,
+        )
+
+    return sent, send_turn
+
+
+def _statistical_scenario(**overrides: object) -> list[dict[str, object]]:
+    return [
+        {
+            "name": "nondeterministic",
+            "message": "answer",
+            "expect": {"text": {"equals": "yes"}},
+            "trials": 20,
+            "pass_rate": {"min": 0.8},
+            **overrides,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_statistical_pass_rate_proves_a_lower_bound() -> None:
+    _, send_turn = _counting_sender(iter(["no", *["yes"] * 19]))
+
+    result = await run_with_sender(_config(_statistical_scenario()), send_turn)
+
+    scenario = result.scenarios[0]
+    assert result.passed
+    assert (scenario.passed_trials, scenario.required_trials) == (19, 19)
+    assert scenario.pass_rate_lower_bound == 0.804
+
+
+@pytest.mark.asyncio
+async def test_statistical_pass_rate_fails_below_the_lower_bound() -> None:
+    _, send_turn = _counting_sender(iter(["no", "no", *["yes"] * 18]))
+
+    result = await run_with_sender(_config(_statistical_scenario()), send_turn)
+
+    scenario = result.scenarios[0]
+    assert not result.passed
+    assert (scenario.passed_trials, scenario.required_trials) == (18, 19)
+    assert scenario.pass_rate_lower_bound is not None
+    assert scenario.pass_rate_lower_bound < 0.8
+
+
+@pytest.mark.asyncio
+async def test_early_stop_ends_a_scenario_whose_verdict_is_settled() -> None:
+    sent, send_turn = _counting_sender(iter(["yes", "no", "no", *["yes"] * 17]))
+
+    result = await run_with_sender(_config(_statistical_scenario()), send_turn, early_stop=True)
+
+    scenario = result.scenarios[0]
+    assert not result.passed
+    assert len(sent) == 3
+    assert len(scenario.trials) == 3
+    assert scenario.pass_rate_lower_bound is None
+
+
+@pytest.mark.asyncio
+async def test_early_stop_keeps_every_trial_when_latency_is_measured() -> None:
+    sent, send_turn = _counting_sender(iter(["no", *["yes"] * 19]))
+    scenarios = _statistical_scenario(latency={"p95_seconds": 10})
+
+    result = await run_with_sender(_config(scenarios), send_turn, early_stop=True)
+
+    assert result.passed
+    assert len(sent) == 20
+    assert result.scenarios[0].latency is not None
+
+
+@pytest.mark.asyncio
+async def test_early_stop_is_ignored_for_concurrent_trials() -> None:
+    sent, send_turn = _counting_sender(iter(["no", "no", *["yes"] * 18]))
+
+    result = await run_with_sender(
+        _config(_statistical_scenario()),
+        send_turn,
+        max_parallel_trials=4,
+        early_stop=True,
+    )
+
+    assert not result.passed
+    assert len(sent) == 20
 
 
 def test_evaluates_interpolated_trial_latency_percentiles() -> None:

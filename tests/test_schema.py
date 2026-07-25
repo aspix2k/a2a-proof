@@ -70,6 +70,14 @@ def test_schema_accepts_examples_and_configuration_shorthand() -> None:
         {
             "version": 1,
             "agent": {"url": "https://example.com"},
+            "defaults": {"trials": 20, "pass_rate": {"min": 0.8, "confidence": 0.99}},
+            "scenarios": [{"name": "statistical", "message": "Hello"}],
+        }
+    )
+    validator.validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
             "push_notifications": {},
             "scenarios": [
                 {

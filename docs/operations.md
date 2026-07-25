@@ -7,6 +7,7 @@ a2a-proof check [CONFIG]
 a2a-proof run [CONFIG]
 a2a-proof run --transport GRPC
 a2a-proof run --scenario smoke --jobs 4
+a2a-proof run --early-stop
 a2a-proof run --format json
 a2a-proof run --format junit --output a2a-proof.xml
 a2a-proof run --evidence a2a-proof-evidence
@@ -16,6 +17,12 @@ a2a-proof diff --against https://candidate-agent.example.com --format json
 
 `--scenario` is repeatable and matches exact, case-sensitive names in configuration order.
 `--jobs` runs trials within a scenario concurrently, defaults to `1`, and is capped at `32`.
+
+`--early-stop` ends a scenario once its remaining trials cannot change the verdict, which keeps a
+broken contract from spending every trial. It applies to sequential runs only and is skipped for a
+scenario with a `latency` block, because percentiles need every sample. A scenario that stops early
+reports no [statistical pass-rate bound](contracts.md#statistical-pass-rates), and the evidence
+manifest records `early_stop`.
 
 Exit code `0` means the contract passed, `1` means it failed, and `2` means execution or
 configuration failed. In `diff`, the candidate contract result controls exit code `0` or `1`; a

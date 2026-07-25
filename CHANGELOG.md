@@ -7,6 +7,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Features
+
+- Added delegation contracts. A `downstream` block runs a recording A2A agent, `{{downstream_url}}`
+  carries its address into the turn's message and structured input, and `expect.delegation` asserts
+  the call count, the text and structured data one call carried, and that no named environment
+  secret reached it. This checks what the agent sends rather than what it answers, so an
+  orchestrator that stopped calling its specialist, or that forwards its caller's `Authorization`
+  header downstream, fails the contract. Delegation checks require sequential trials.
+
+- Added a statistical `pass_rate`. `pass_rate: {min: 0.8, confidence: 0.95}` passes a scenario only
+  when the one-sided Wilson lower bound of the observed success rate reaches `min`, so a contract
+  states a claim about the agent rather than about the sample it happened to draw. A configuration
+  whose `trials` can never support the claim is rejected by `check` and `run` with the minimum that
+  can. Results carry the proven bound in the terminal table and in `pass_rate_lower_bound`.
+- Added `run --early-stop`, which ends a sequential scenario once its remaining trials cannot change
+  the verdict. Scenarios with a `latency` block still run every trial because percentiles need every
+  sample, a run that stops early reports no lower bound, and the evidence manifest records the
+  setting.
+
 ## 0.14.1 - 2026-07-21
 
 ### Bug fixes

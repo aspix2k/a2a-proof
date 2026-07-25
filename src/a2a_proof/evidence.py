@@ -13,7 +13,7 @@ from typing import Any
 import regex
 from a2a.types import AgentCard
 
-from a2a_proof.config import resolve_invariant_secrets
+from a2a_proof.config import resolve_secret_values
 from a2a_proof.models import ProofConfig, SuiteResult, TrialResult, TurnResult
 
 MAX_EVIDENCE_TRIALS = 100
@@ -38,6 +38,7 @@ def write_evidence(
     environ: Mapping[str, str] | None = None,
     *,
     max_parallel_trials: int = 1,
+    early_stop: bool = False,
 ) -> None:
     if os.path.lexists(directory):
         raise EvidenceError(f"evidence path already exists: {directory}")
@@ -45,7 +46,7 @@ def write_evidence(
         raise EvidenceError(f"evidence parent directory does not exist: {directory.parent}")
 
     secrets = {*config.agent.headers.values(), *config.redaction_values}
-    secrets.update(resolve_invariant_secrets(config, environ).values())
+    secrets.update(resolve_secret_values(config, environ).values())
     redactor = _Redactor(secrets)
     failed = [
         (scenario.name, trial)
@@ -82,6 +83,7 @@ def write_evidence(
             "execution": {
                 "scenarios": redactor.redact([scenario.name for scenario in config.scenarios]),
                 "max_parallel_trials": max_parallel_trials,
+                "early_stop": early_stop,
                 "transport": config.agent.transport,
             },
             "passed": result.passed,
