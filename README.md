@@ -24,10 +24,11 @@ AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-rece
 | Risk | Contract |
 | --- | --- |
 | A prompt, model, or backend change alters an answer | Text, structured data, JSON Schema, and file integrity assertions |
-| An LLM succeeds only some of the time or gets slower | Repeated trials, pass rates, parallel runs, and p50/p95 latency |
+| An LLM succeeds only some of the time or gets slower | Repeated trials, statistically bounded pass rates, parallel runs, and p50/p95 latency |
 | A long-running task breaks after acceptance | State trajectories, stream resumption, cancellation, persistence, and push delivery |
 | Staging no longer behaves like production | Agent Card preflight and deployment diff |
 | Agent text leaks a secret or system prompt | Global invariants and bounded failure evidence |
+| An orchestrator stops calling its specialist, or forwards credentials to it | Delegation contracts against a recording downstream agent |
 | An agent produces an invalid payment proof | Signed AP2 mandate-chain and receipt verification |
 
 ## Quick start
@@ -110,6 +111,7 @@ Set `config` only when the contract is not `a2a-proof.yaml`.
 - [Assertions](docs/assertions.md)
 - [Task lifecycle](docs/lifecycle.md)
 - [Push notifications](docs/push-notifications.md)
+- [Delegation contracts](docs/delegation.md)
 - [AP2 contracts](docs/ap2.md)
 - [External agent showcases](docs/showcases.md)
 - [Running in development and CI](docs/operations.md)
@@ -123,7 +125,8 @@ automatically.
 Agent responses and file metadata are treated as untrusted input. Requests, response parts,
 regular expressions, embedded schemas, evidence, and local file access are bounded. Redirects,
 credential-bearing URLs, external schema references, and cross-origin interfaces are rejected by
-default. Remote file URLs are never fetched or written to reports.
+default. Remote file URLs are never fetched or written to reports. Requests recorded by the
+delegation agent stay in memory and are never written to reports or evidence.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reports.
 

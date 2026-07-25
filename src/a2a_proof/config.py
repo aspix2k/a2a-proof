@@ -47,7 +47,7 @@ def load_config(path: Path, environ: Mapping[str, str] | None = None) -> ProofCo
         environment = os.environ if environ is None else environ
         expanded = _expand_environment(raw, environment)
         config = ProofConfig.model_validate(expanded)
-        resolve_invariant_secrets(config, environment)
+        resolve_secret_values(config, environment)
         config.bind_contract_dir(path.parent)
         config.bind_contract_sha256(sha256(content).hexdigest())
         config.bind_redaction_values(_header_environment_values(raw, environment))
@@ -244,6 +244,7 @@ def config_schema() -> dict[str, Any]:
         {"required": ["not_contains"]},
         {"required": ["not_contains_env"]},
     ]
+    _tune_delegation(definitions["DelegationExpectation"], environment_name)
     file_expectation = definitions["FileExpectation"]
     integrity_fields = ("size_bytes", "min_size_bytes", "max_size_bytes", "sha256")
     for name in integrity_fields:
@@ -335,14 +336,30 @@ def config_schema() -> dict[str, Any]:
     return schema
 
 
-def resolve_invariant_secrets(
+def _tune_delegation(delegation: dict[str, Any], environment_name: dict[str, Any]) -> None:
+    properties = delegation["properties"]
+    properties["data"]["anyOf"][1]["maxItems"] = 100
+    properties["not_contains_env"]["anyOf"] = [
+        environment_name,
+        {"type": "array", "items": environment_name, "maxItems": 100},
+    ]
+    delegation["anyOf"] = [
+        {"required": ["count"]},
+        {"required": ["text"]},
+        {"required": ["data"]},
+        {"required": ["not_contains_env"]},
+    ]
+
+
+def resolve_secret_values(
     config: ProofConfig,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    if config.invariants is None:
+    names = list(config.invariants.text.not_contains_env) if config.invariants is not None else []
+    names.extend(name for name in config.delegation_environment_names if name not in names)
+    if not names:
         return {}
     environment = os.environ if environ is None else environ
-    names = config.invariants.text.not_contains_env
     missing = sorted(name for name in names if name not in environment)
     if missing:
         raise ConfigError(f"missing environment variable(s): {', '.join(missing)}")

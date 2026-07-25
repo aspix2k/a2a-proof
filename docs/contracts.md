@@ -86,6 +86,47 @@ scenarios:
         matches: "(?i)red|blue|yellow"
 ```
 
+## Statistical pass rates
+
+A numeric `pass_rate` counts trials: `ceil(trials × pass_rate)` of them must pass. That check
+describes the sample it observed and nothing beyond it, so `4/5` at `pass_rate: 0.8` is as
+consistent with an agent that answers correctly 55% of the time as with one that answers correctly
+95% of the time.
+
+The object form states the claim the trials have to support instead:
+
+```yaml
+scenarios:
+  - name: nondeterministic answer
+    message: Name a primary color
+    trials: 20
+    pass_rate:
+      min: 0.8
+      confidence: 0.95
+    expect:
+      text:
+        matches: "(?i)red|blue|yellow"
+```
+
+The scenario passes only when the one-sided [Wilson score](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval)
+lower bound of the observed success rate reaches `min` at the configured `confidence`, which
+defaults to `0.95`. Twenty trials prove `0.8` while tolerating one failure; eleven prove it only if
+every trial passes.
+
+Because a small sample cannot support such a claim at all, `check` and `run` reject a scenario
+whose `trials` can never reach the bound and report the minimum that can:
+
+```console
+$ uvx a2a-proof check
+Error: scenario 'nondeterministic answer' cannot prove a pass rate of 0.8 at 0.95 confidence with
+5 trials; use at least 11
+```
+
+The proven bound appears in the terminal table and as `pass_rate_lower_bound` in JSON output.
+
+A turn can also assert the calls the agent makes to a recording downstream agent. See
+[Delegation contracts](delegation.md).
+
 Long-running scenarios can attach a per-trial callback and assert the delivered event with
 `push_notification: true` followed by `action: await_push`. See
 [Push notification contracts](push-notifications.md).

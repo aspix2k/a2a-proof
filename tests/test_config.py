@@ -464,6 +464,7 @@ def test_resolves_single_turn_structured_input() -> None:
         "timeout_seconds": None,
         "expect": {
             "state": None,
+            "delegation": None,
             "text": None,
             "states": None,
             "data": [],
@@ -708,6 +709,47 @@ def test_applies_scenario_defaults_only_when_omitted() -> None:
     assert (first.trials, first.pass_rate) == (3, 0.5)
     assert (second.trials, second.pass_rate) == (1, 1)
     assert config.scenarios[0].trials == 1
+
+
+def test_resolves_statistical_pass_rate_from_defaults() -> None:
+    config = models_module.ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": "https://example.com"},
+            "defaults": {"trials": 20, "pass_rate": {"min": 0.8}},
+            "scenarios": [{"name": "statistical", "message": "Hello"}],
+        }
+    )
+
+    scenario = config.resolved_scenarios()[0]
+    assert scenario.pass_rate == models_module.PassRateExpectation(min=0.8, confidence=0.95)
+    assert scenario.required_trials == 19
+
+
+def test_rejects_a_pass_rate_too_few_trials_can_prove() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"cannot prove a pass rate of 0.8 at 0.95 confidence with 5 trials; use at least 11",
+    ):
+        models_module.ProofConfig.model_validate(
+            {
+                "version": 1,
+                "agent": {"url": "https://example.com"},
+                "scenarios": [
+                    {
+                        "name": "statistical",
+                        "message": "Hello",
+                        "trials": 5,
+                        "pass_rate": {"min": 0.8},
+                    }
+                ],
+            }
+        )
+
+
+def test_rejects_a_certain_pass_rate_as_a_statistical_gate() -> None:
+    with pytest.raises(ValueError, match="less than 1"):
+        models_module.PassRateExpectation(min=1)
 
 
 def test_validates_card_and_state_sequence_assertions() -> None:

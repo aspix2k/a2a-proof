@@ -350,6 +350,11 @@ def demo_command(intentional_failure: bool) -> None:
     show_default=True,
     help="Maximum concurrent trials within one scenario.",
 )
+@click.option(
+    "--early-stop",
+    is_flag=True,
+    help="Stop a sequential scenario once its remaining trials cannot change the verdict.",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Show failed agent responses.")
 @click.option(
     "scenario_names",
@@ -369,6 +374,7 @@ def run_command(
     output: Path | None,
     evidence_dir: Path | None,
     jobs: int,
+    early_stop: bool,
     verbose: bool,
     scenario_names: tuple[str, ...],
     transport: str | None,
@@ -383,9 +389,15 @@ def run_command(
             config = config.model_copy(
                 update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
             )
-        result = asyncio.run(run(config, max_parallel_trials=jobs))
+        result = asyncio.run(run(config, max_parallel_trials=jobs, early_stop=early_stop))
         if evidence_dir is not None:
-            write_evidence(evidence_dir, config, result, max_parallel_trials=jobs)
+            write_evidence(
+                evidence_dir,
+                config,
+                result,
+                max_parallel_trials=jobs,
+                early_stop=early_stop,
+            )
     except (A2AClientError, ConfigError, EvidenceError, OSError, RuntimeError) as error:
         raise ProofCommandError(str(error)) from error
 

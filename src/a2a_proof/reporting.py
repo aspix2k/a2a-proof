@@ -35,7 +35,7 @@ def render_terminal(result: SuiteResult, console: Console, *, verbose: bool) -> 
         table.add_row(
             Text("PASS", style="green") if scenario.passed else Text("FAIL", style="red"),
             Text(_safe_text(scenario.name, single_line=True)),
-            f"{scenario.passed_trials}/{len(scenario.trials)}",
+            _trial_count(scenario),
             _duration(elapsed),
         )
     console.print(table)
@@ -173,6 +173,13 @@ def render_diff_json(result: DiffResult) -> str:
     return result.model_dump_json(indent=2)
 
 
+def _trial_count(scenario: ScenarioResult) -> str:
+    count = f"{scenario.passed_trials}/{len(scenario.trials)}"
+    if scenario.pass_rate_lower_bound is None:
+        return count
+    return f"{count} p≥{scenario.pass_rate_lower_bound:.2f}"
+
+
 def _render_scenario_failures(
     scenario: ScenarioResult,
     console: Console,
@@ -180,6 +187,13 @@ def _render_scenario_failures(
     verbose: bool,
 ) -> None:
     console.print(Text(f"\n{_safe_text(scenario.name, single_line=True)}", style="bold red"))
+    if len(scenario.trials) > 1 and scenario.passed_trials < scenario.required_trials:
+        console.print(
+            Text(
+                f"  pass rate: {scenario.passed_trials}/{len(scenario.trials)} trials passed; "
+                f"{scenario.required_trials} required"
+            )
+        )
     if scenario.latency is not None:
         for failure in scenario.latency.failures:
             console.print(Text(f"  latency: {_diagnostic(failure)}"))

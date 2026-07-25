@@ -112,6 +112,7 @@ def test_writes_redacted_failed_trial_bundle(tmp_path: Path) -> None:
         "execution": {
             "scenarios": ["smoke"],
             "max_parallel_trials": 1,
+            "early_stop": False,
             "transport": "auto",
         },
         "passed": False,

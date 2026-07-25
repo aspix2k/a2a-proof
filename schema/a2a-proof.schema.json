@@ -856,6 +856,194 @@
       "title": "DataExpectation",
       "type": "object"
     },
+    "DelegationExpectation": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "count"
+          ]
+        },
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "required": [
+            "not_contains_env"
+          ]
+        }
+      ],
+      "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact number of downstream calls the turn must make.",
+          "title": "Count"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DataExpectation"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/DataExpectation"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "Structured checks for the data one downstream call must carry.",
+          "title": "Data"
+        },
+        "not_contains_env": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "items": {
+                "maxLength": 200,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          ],
+          "description": "Environment variables whose values must not reach the downstream agent.",
+          "title": "Not Contains Env"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Checks for the text one downstream call must carry."
+        }
+      },
+      "title": "DelegationExpectation",
+      "type": "object"
+    },
+    "DownstreamConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "listen_host": {
+          "default": "127.0.0.1",
+          "description": "Literal IP address for the local downstream listener.",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Listen Host",
+          "type": "string"
+        },
+        "listen_port": {
+          "default": 0,
+          "description": "Local listener port; zero selects an available port.",
+          "maximum": 65535,
+          "minimum": 0,
+          "title": "Listen Port",
+          "type": "integer"
+        },
+        "name": {
+          "default": "a2a-proof downstream",
+          "description": "Agent Card name the downstream agent advertises.",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "public_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Externally reachable base URL; local listener URL by default.",
+          "title": "Public Url"
+        },
+        "reply": {
+          "$ref": "#/$defs/DownstreamReply",
+          "description": "Response the downstream agent returns for every call."
+        },
+        "skills": {
+          "description": "Skill IDs the downstream agent advertises.",
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Skills",
+          "type": "array"
+        }
+      },
+      "title": "DownstreamConfig",
+      "type": "object"
+    },
+    "DownstreamReply": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured value the downstream agent answers with."
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 100000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Text the downstream agent answers with.",
+          "title": "Text"
+        }
+      },
+      "title": "DownstreamReply",
+      "type": "object"
+    },
     "Expectation": {
       "additionalProperties": false,
       "properties": {
@@ -900,6 +1088,18 @@
           ],
           "description": "Structured response checks.",
           "title": "Data"
+        },
+        "delegation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelegationExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Checks for the calls the agent makes to the recording downstream agent."
         },
         "files": {
           "anyOf": [
@@ -1248,6 +1448,31 @@
       "title": "LatencyExpectation",
       "type": "object"
     },
+    "PassRateExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "default": 0.95,
+          "description": "Confidence level of the one-sided Wilson lower bound.",
+          "exclusiveMaximum": 1,
+          "minimum": 0.5,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "min": {
+          "description": "Success probability the trials must prove.",
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Min",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min"
+      ],
+      "title": "PassRateExpectation",
+      "type": "object"
+    },
     "PushNotificationsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1356,12 +1581,19 @@
           "type": "string"
         },
         "pass_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/PassRateExpectation"
+            }
+          ],
           "default": 1.0,
-          "description": "Minimum successful trial fraction.",
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "title": "Pass Rate",
-          "type": "number"
+          "description": "Minimum successful trial fraction, or a statistical gate.",
+          "title": "Pass Rate"
         },
         "trials": {
           "default": 1,
@@ -1400,12 +1632,19 @@
       "additionalProperties": false,
       "properties": {
         "pass_rate": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/PassRateExpectation"
+            }
+          ],
           "default": 1.0,
-          "description": "Default minimum successful trial fraction.",
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "title": "Pass Rate",
-          "type": "number"
+          "description": "Default minimum successful trial fraction, or a statistical gate.",
+          "title": "Pass Rate"
         },
         "trials": {
           "default": 1,
@@ -1985,6 +2224,18 @@
     "defaults": {
       "$ref": "#/$defs/ScenarioDefaults",
       "description": "Defaults applied to scenarios that omit these fields."
+    },
+    "downstream": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DownstreamConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Recording agent the tested agent can delegate work to."
     },
     "invariants": {
       "anyOf": [
