@@ -22,6 +22,7 @@ from a2a_proof.ap2 import (
     read_ap2_receipt_token,
     read_ap2_token,
 )
+from a2a_proof.cassette import CassetteError, Recorder, load_cassette, write_cassette
 from a2a_proof.config import ConfigError, load_config, write_config
 from a2a_proof.demo import run_demo
 from a2a_proof.diffing import compare_results
@@ -40,7 +41,7 @@ from a2a_proof.reporting import (
     render_junit,
     render_terminal,
 )
-from a2a_proof.runner import run
+from a2a_proof.runner import run, run_with_sender
 
 DEFAULT_CONFIG = Path("a2a-proof.yaml")
 MAX_GENERATED_SCENARIOS = 20
@@ -355,6 +356,12 @@ def demo_command(intentional_failure: bool) -> None:
     is_flag=True,
     help="Stop a sequential scenario once its remaining trials cannot change the verdict.",
 )
+@click.option(
+    "--replay",
+    "replay_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Evaluate the contract against a recorded cassette instead of the agent.",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Show failed agent responses.")
 @click.option(
     "scenario_names",
@@ -375,6 +382,7 @@ def run_command(
     evidence_dir: Path | None,
     jobs: int,
     early_stop: bool,
+    replay_path: Path | None,
     verbose: bool,
     scenario_names: tuple[str, ...],
     transport: str | None,
@@ -382,14 +390,14 @@ def run_command(
     """Run the configured scenarios against the agent."""
     if output is not None and output_format == "terminal":
         raise click.UsageError("--output requires --format json or junit")
+    if replay_path is not None and jobs > 1:
+        raise click.UsageError("--replay requires --jobs 1 because a cassette is ordered")
     try:
-        config = load_config(config_path)
-        config = _with_transport(config, transport)
-        if scenario_names:
-            config = config.model_copy(
-                update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
-            )
-        result = asyncio.run(run(config, max_parallel_trials=jobs, early_stop=early_stop))
+        config = _prepared_config(config_path, transport, scenario_names)
+        if replay_path is not None:
+            result = asyncio.run(_replay(config, replay_path, early_stop=early_stop))
+        else:
+            result = asyncio.run(run(config, max_parallel_trials=jobs, early_stop=early_stop))
         if evidence_dir is not None:
             write_evidence(
                 evidence_dir,
@@ -398,7 +406,14 @@ def run_command(
                 max_parallel_trials=jobs,
                 early_stop=early_stop,
             )
-    except (A2AClientError, ConfigError, EvidenceError, OSError, RuntimeError) as error:
+    except (
+        A2AClientError,
+        CassetteError,
+        ConfigError,
+        EvidenceError,
+        OSError,
+        RuntimeError,
+    ) as error:
         raise ProofCommandError(str(error)) from error
 
     if output_format in {"json", "junit"}:
@@ -415,6 +430,61 @@ def run_command(
                 ) from error
     else:
         render_terminal(result, Console(), verbose=verbose)
+    if not result.passed:
+        raise click.exceptions.Exit(1)
+
+
+@main.command("record")
+@click.argument(
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=DEFAULT_CONFIG,
+)
+@click.option(
+    "--output",
+    "-o",
+    "cassette_path",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Cassette file to write.",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Show failed agent responses.")
+@click.option(
+    "scenario_names",
+    "--scenario",
+    multiple=True,
+    metavar="NAME",
+    help="Record only this scenario. Repeat to select more than one.",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(TRANSPORT_CHOICES),
+    help="Override the configured transport for this recording.",
+)
+def record_command(
+    config_path: Path,
+    cassette_path: Path,
+    verbose: bool,
+    scenario_names: tuple[str, ...],
+    transport: str | None,
+) -> None:
+    """Run the contract and record the agent's responses as a cassette."""
+    try:
+        config = _prepared_config(config_path, transport, scenario_names)
+        recorder = Recorder()
+        result = asyncio.run(run(config, recorder=recorder))
+        write_cassette(cassette_path, config, recorder)
+    except (
+        A2AClientError,
+        CassetteError,
+        ConfigError,
+        OSError,
+        RuntimeError,
+    ) as error:
+        raise ProofCommandError(str(error)) from error
+
+    render_terminal(result, Console(), verbose=verbose)
+    click.echo(f"Recorded {_turn_count(len(recorder.turns))} to {cassette_path}.")
     if not result.passed:
         raise click.exceptions.Exit(1)
 
@@ -465,12 +535,7 @@ def diff_command(
     if output is not None and output_format == "terminal":
         raise click.UsageError("--output requires --format json")
     try:
-        config = load_config(config_path)
-        config = _with_transport(config, transport)
-        if scenario_names:
-            config = config.model_copy(
-                update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
-            )
+        config = _prepared_config(config_path, transport, scenario_names)
         candidate_agent = AgentConfig.model_validate({**config.agent.model_dump(), "url": against})
         candidate_config = config.model_copy(update={"agent": candidate_agent})
         baseline_result, candidate_result = asyncio.run(
@@ -501,6 +566,26 @@ def diff_command(
         raise click.exceptions.Exit(1)
 
 
+async def _replay(config: ProofConfig, path: Path, *, early_stop: bool) -> SuiteResult:
+    if config.uses_push_notifications or config.uses_delegation:
+        raise CassetteError(
+            "a contract with push notifications or delegation checks cannot be replayed"
+        )
+    cassette = load_cassette(path)
+    if cassette.contract_sha256 != config.contract_sha256:
+        click.echo(f"Note: {path} was recorded from another contract revision.", err=True)
+    sender = cassette.sender()
+    return await run_with_sender(
+        config,
+        sender,
+        cancel_task=sender,
+        get_task=sender,
+        subscribe_task=sender,
+        card=cassette.card,
+        early_stop=early_stop,
+    )
+
+
 async def _run_pair(
     baseline: ProofConfig,
     candidate: ProofConfig,
@@ -510,6 +595,19 @@ async def _run_pair(
     baseline_result = await run(baseline, max_parallel_trials=max_parallel_trials)
     candidate_result = await run(candidate, max_parallel_trials=max_parallel_trials)
     return baseline_result, candidate_result
+
+
+def _prepared_config(
+    config_path: Path,
+    transport: str | None,
+    scenario_names: tuple[str, ...],
+) -> ProofConfig:
+    config = _with_transport(load_config(config_path), transport)
+    if not scenario_names:
+        return config
+    return config.model_copy(
+        update={"scenarios": _select_scenarios(config.scenarios, scenario_names)}
+    )
 
 
 def _with_transport(config: ProofConfig, transport: str | None) -> ProofConfig:
@@ -565,6 +663,10 @@ def _unique_name(base: str, used: set[str]) -> str:
 
 def _scenario_count(count: int) -> str:
     return f"{count} scenario{'s' if count != 1 else ''}"
+
+
+def _turn_count(count: int) -> str:
+    return f"{count} turn{'s' if count != 1 else ''}"
 
 
 def _select_scenarios(

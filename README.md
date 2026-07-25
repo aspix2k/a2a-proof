@@ -27,6 +27,7 @@ AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-rece
 | An LLM succeeds only some of the time or gets slower | Repeated trials, statistically bounded pass rates, parallel runs, and p50/p95 latency |
 | A long-running task breaks after acceptance | State trajectories, stream resumption, cancellation, persistence, and push delivery |
 | Staging no longer behaves like production | Agent Card preflight and deployment diff |
+| A contract change needs review without a live agent | Recorded cassettes replayed offline |
 | Agent text leaks a secret or system prompt | Global invariants and bounded failure evidence |
 | An orchestrator stops calling its specialist, or forwards credentials to it | Delegation contracts against a recording downstream agent |
 | An agent produces an invalid payment proof | Signed AP2 mandate-chain and receipt verification |
@@ -93,6 +94,7 @@ Run one scenario, save failure evidence, or compare the same contract against an
 uvx a2a-proof run --scenario "billing dispute routing"
 uvx a2a-proof run --format junit --output a2a-proof.xml --evidence evidence
 uvx a2a-proof diff --against https://candidate-agent.example.com
+uvx a2a-proof record --output cassette.json && uvx a2a-proof run --replay cassette.json
 ```
 
 ## GitHub Actions
@@ -112,6 +114,7 @@ Set `config` only when the contract is not `a2a-proof.yaml`.
 - [Task lifecycle](docs/lifecycle.md)
 - [Push notifications](docs/push-notifications.md)
 - [Delegation contracts](docs/delegation.md)
+- [Recording and replay](docs/cassettes.md)
 - [AP2 contracts](docs/ap2.md)
 - [External agent showcases](docs/showcases.md)
 - [Running in development and CI](docs/operations.md)

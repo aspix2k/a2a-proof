@@ -13,6 +13,8 @@ a2a-proof run --format junit --output a2a-proof.xml
 a2a-proof run --evidence a2a-proof-evidence
 a2a-proof diff [CONFIG] --against https://candidate-agent.example.com
 a2a-proof diff --against https://candidate-agent.example.com --format json
+a2a-proof record [CONFIG] --output cassette.json
+a2a-proof run --replay cassette.json
 ```
 
 `--scenario` is repeatable and matches exact, case-sensitive names in configuration order.
@@ -118,6 +120,12 @@ Extension activation is transport-level. AP2 mandate semantics require the optio
 The built-in push receiver listens on loopback by default. Remote agents need a public HTTPS route
 to a fixed local port; configuration, authentication, limits, and failure behavior are covered in
 [Push notification contracts](push-notifications.md).
+
+## Recording and replay
+
+`record` runs the contract against the agent and writes the observed responses to a cassette;
+`run --replay` evaluates a contract against that cassette with no network access. See
+[Recording and replaying a run](cassettes.md).
 
 ## Delegation networking
 

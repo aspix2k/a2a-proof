@@ -39,10 +39,11 @@ from a2a.types import (
 )
 from click.testing import CliRunner
 
+from a2a_proof.cassette import Recorder, load_cassette, write_cassette
 from a2a_proof.cli import main
 from a2a_proof.models import ProofConfig, PushNotificationsConfig
 from a2a_proof.push import PushReceiver
-from a2a_proof.runner import run
+from a2a_proof.runner import run, run_with_sender
 
 TEST_EXTENSION = "https://example.com/extensions/structured-input/v1"
 
@@ -530,6 +531,40 @@ async def test_runs_real_jsonrpc_exchange(agent_url: str) -> None:
 
     assert result.passed
     assert result.scenarios[0].trials[0].turns[0].text == "echo: Hello"
+
+
+@pytest.mark.asyncio
+async def test_records_a_real_exchange_and_replays_it_offline(
+    agent_url: str,
+    tmp_path: Path,
+) -> None:
+    config = ProofConfig.model_validate(
+        {
+            "version": 1,
+            "agent": {"url": agent_url},
+            "card": {"skills": {"contains": ["echo"]}},
+            "scenarios": [
+                {
+                    "name": "echo",
+                    "message": "Hello",
+                    "expect": {"text": {"equals": "echo: Hello"}},
+                }
+            ],
+        }
+    )
+    recorder = Recorder()
+    path = tmp_path / "cassette.json"
+
+    live = await run(config, recorder=recorder)
+    write_cassette(path, config, recorder)
+    cassette = load_cassette(path)
+    offline = await run_with_sender(config, cassette.sender(), card=cassette.card)
+
+    assert live.passed
+    assert offline.passed
+    assert cassette.card is not None
+    assert [skill.id for skill in cassette.card.skills] == ["echo"]
+    assert offline.scenarios[0].trials[0].turns[0].text == "echo: Hello"
 
 
 @pytest.mark.asyncio

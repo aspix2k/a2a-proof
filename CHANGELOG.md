@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Features
+
+- Added `record` and `run --replay`. `record` runs a contract against the agent and writes every
+  observed response, the Agent Card, and the contract digest to a cassette; `run --replay`
+  evaluates a contract against that cassette with no network access, no credentials, and no agent
+  cost. Assertions are evaluated fresh, so a changed expectation produces a real verdict against
+  recorded behavior, which makes contract review possible in a pull request. Replay requires
+  `--jobs 1` and rejects contracts that assert on push notifications or delegation.
+
 ### Maintenance
 
 - Replaced the yanked `zizmor==1.27.0` development pin with `1.28.0`. The workflow audit still

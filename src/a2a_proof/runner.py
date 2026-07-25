@@ -17,6 +17,7 @@ from a2a_proof.assertions import (
     evaluate_delegation,
     evaluate_invariants,
 )
+from a2a_proof.cassette import Recorder
 from a2a_proof.config import resolve_secret_values
 from a2a_proof.downstream import DownstreamAgent, resolve_downstream_url
 from a2a_proof.evidence import agent_card_sha256
@@ -50,6 +51,7 @@ async def run(
     environ: Mapping[str, str] | None = None,
     max_parallel_trials: int = 1,
     early_stop: bool = False,
+    recorder: Recorder | None = None,
     _trust_env: bool = True,
 ) -> SuiteResult:
     _validate_parallel_trials(max_parallel_trials)
@@ -70,12 +72,14 @@ async def run(
             if config.downstream is not None and config.uses_delegation
             else None
         )
+        if recorder is not None:
+            recorder.card = session.card
         return await run_with_sender(
             config,
-            session.send_turn,
-            cancel_task=session.cancel_task,
-            get_task=session.get_task,
-            subscribe_task=session.subscribe_task,
+            session.send_turn if recorder is None else recorder.wrap(session.send_turn),
+            cancel_task=_recorded(recorder, session.cancel_task),
+            get_task=_recorded(recorder, session.get_task),
+            subscribe_task=_recorded(recorder, session.subscribe_task),
             card=session.card,
             invariant_secrets=invariant_secrets,
             max_parallel_trials=max_parallel_trials,
@@ -479,6 +483,10 @@ def _percentile(values: list[int], percentile: float) -> int:
         return ordered[lower]
     interpolated = ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
     return round(interpolated)
+
+
+def _recorded(recorder: Recorder | None, operation: TaskAction) -> TaskAction:
+    return operation if recorder is None else recorder.wrap(operation)
 
 
 def _validate_parallel_trials(value: int) -> None:
