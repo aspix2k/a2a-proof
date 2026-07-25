@@ -692,6 +692,131 @@ def test_run_forwards_early_stop_to_the_runner_and_the_evidence(
     assert recorded == [True, True]
 
 
+def test_record_writes_a_cassette_and_reports_the_run(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    cassette = tmp_path / "cassette.json"
+    suite = SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    async def run(config, *, recorder):
+        recorder.turns.append({"state": "completed"})
+        return suite
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(main, ["record", str(path), "-o", str(cassette)])
+
+    assert result.exit_code == 0
+    assert f"Recorded 1 turn to {cassette}." in result.output
+    document = json.loads(cassette.read_text(encoding="utf-8"))
+    assert document["cassette_version"] == 1
+    assert document["turns"] == [{"state": "completed"}]
+    assert document["contract_sha256"] is not None
+
+
+def test_record_reports_a_failing_contract_with_exit_one(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+
+    async def run(config, *, recorder):
+        return SuiteResult(passed=False, duration_ms=1, scenarios=[])
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(
+        main,
+        ["record", str(path), "-o", str(tmp_path / "cassette.json")],
+    )
+
+    assert result.exit_code == 1
+
+
+def test_record_refuses_to_overwrite_a_cassette(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    cassette = tmp_path / "cassette.json"
+    cassette.write_text("{}", encoding="utf-8")
+
+    async def run(config, *, recorder):
+        return SuiteResult(passed=True, duration_ms=1, scenarios=[])
+
+    monkeypatch.setattr(cli_module, "run", run)
+
+    result = CliRunner().invoke(main, ["record", str(path), "-o", str(cassette)])
+
+    assert result.exit_code == 2
+    assert "cassette path already exists" in result.output
+
+
+def test_replay_rejects_concurrency_and_unsupported_contracts(tmp_path: Path) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    delegating = tmp_path / "delegating.yaml"
+    delegating.write_text(
+        """
+version: 1
+agent: {url: https://example.com}
+downstream: {}
+scenarios:
+  - name: smoke
+    message: Hello
+    expect: {delegation: {count: 1}}
+""",
+        encoding="utf-8",
+    )
+    cassette = tmp_path / "cassette.json"
+    cassette.write_text(
+        json.dumps({"cassette_version": 1, "agent_url": "https://example.com", "turns": []}),
+        encoding="utf-8",
+    )
+
+    concurrent = CliRunner().invoke(
+        main,
+        ["run", str(path), "--replay", str(cassette), "--jobs", "2"],
+    )
+    unsupported = CliRunner().invoke(
+        main,
+        ["run", str(delegating), "--replay", str(cassette)],
+    )
+
+    assert concurrent.exit_code == 2
+    assert "--replay requires --jobs 1" in concurrent.output
+    assert unsupported.exit_code == 2
+    assert "cannot be replayed" in unsupported.output
+
+
+def test_replay_evaluates_a_recorded_run_and_notes_a_changed_contract(tmp_path: Path) -> None:
+    path = tmp_path / "proof.yaml"
+    path.write_text(VALID_CONFIG, encoding="utf-8")
+    cassette = tmp_path / "cassette.json"
+    cassette.write_text(
+        json.dumps(
+            {
+                "cassette_version": 1,
+                "agent_url": "https://example.com",
+                "contract_sha256": "another-revision",
+                "turns": [
+                    {
+                        "state": "completed",
+                        "text": "Hello back",
+                        "task_id": None,
+                        "context_id": "context",
+                        "duration_ms": 4,
+                        "first_event_ms": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["run", str(path), "--replay", str(cassette)])
+
+    assert result.exit_code == 0
+    assert "was recorded from another contract revision" in result.output
+    assert "PASS" in result.output
+
+
 def test_run_requires_json_for_file_output(tmp_path: Path) -> None:
     path = tmp_path / "proof.yaml"
     path.write_text(VALID_CONFIG, encoding="utf-8")
