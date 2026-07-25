@@ -7,6 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Maintenance
+
+- Replaced the yanked `zizmor==1.27.0` development pin with `1.28.0`. The workflow audit still
+  reports no findings.
+
 ## 0.15.0 - 2026-07-25
 
 ### Features
