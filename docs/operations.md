@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: aspix2k/a2a-proof@v0.14.1
+      - uses: aspix2k/a2a-proof@v0.15.0
         with:
           config: contracts/a2a-proof.yaml
 ```
@@ -118,6 +118,12 @@ Extension activation is transport-level. AP2 mandate semantics require the optio
 The built-in push receiver listens on loopback by default. Remote agents need a public HTTPS route
 to a fixed local port; configuration, authentication, limits, and failure behavior are covered in
 [Push notification contracts](push-notifications.md).
+
+## Delegation networking
+
+The recording downstream agent listens on loopback by default and needs its own public HTTPS route
+for a remote agent. Addressing, checks, and limits are covered in
+[Delegation contracts](delegation.md).
 
 ## Evidence
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -126,7 +127,7 @@ def test_writes_redacted_failed_trial_bundle(tmp_path: Path) -> None:
         "truncated": False,
         "records": "failures.jsonl",
     }
-    assert manifest["tool"] == {"name": "a2a-proof", "version": "0.14.1"}
+    assert manifest["tool"] == {"name": "a2a-proof", "version": version("a2a-proof")}
     assert manifest_text == json.dumps(manifest, indent=2) + "\n"
     assert record == {
         "kind": "trial",
