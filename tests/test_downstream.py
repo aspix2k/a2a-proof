@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -42,27 +43,29 @@ def _delegating_sender(*, forward_secret: bool = False, calls: int = 1):
     async def send_turn(message: str | None, **context: object) -> TurnOutcome:
         url = str(message).split("at ")[1]
         headers = {"Authorization": SECRET} if forward_secret else {}
-        async with httpx.AsyncClient(trust_env=False) as client:
-            for index in range(calls):
-                await client.post(
-                    f"{url}{MESSAGE_PATH}",
-                    headers=headers,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": f"downstream-{index}",
-                        "method": "SendMessage",
-                        "params": {
-                            "message": {
-                                "messageId": "1",
-                                "contextId": "downstream-context",
-                                "parts": [
-                                    {"text": "How many units of SKU-42 are left?"},
-                                    {"data": {"sku": "SKU-42"}},
-                                ],
-                            }
-                        },
+        for index in range(calls):
+            await asyncio.to_thread(
+                _request,
+                url,
+                MESSAGE_PATH,
+                method="POST",
+                headers=headers,
+                body={
+                    "jsonrpc": "2.0",
+                    "id": f"downstream-{index}",
+                    "method": "SendMessage",
+                    "params": {
+                        "message": {
+                            "messageId": "1",
+                            "contextId": "downstream-context",
+                            "parts": [
+                                {"text": "How many units of SKU-42 are left?"},
+                                {"data": {"sku": "SKU-42"}},
+                            ],
+                        }
                     },
-                )
+                },
+            )
         return TurnOutcome(
             state="completed",
             text="12 units are left",
@@ -79,24 +82,26 @@ async def test_serves_a_card_and_records_a_delegated_call() -> None:
     async with DownstreamAgent(
         DownstreamConfig.model_validate({"skills": ["lookup"], "reply": {"text": "12 units"}})
     ) as agent:
-        async with httpx.AsyncClient(trust_env=False) as client:
-            card = (await client.get(f"{agent.url}{AGENT_CARD_PATH}")).json()
-            response = await client.post(
-                f"{agent.url}{MESSAGE_PATH}",
-                headers={"Authorization": SECRET},
-                json={
-                    "jsonrpc": "2.0",
-                    "id": "1",
-                    "method": "SendMessage",
-                    "params": {
-                        "message": {
-                            "contextId": "context-1",
-                            "parts": [{"text": "stock?"}, {"data": {"sku": "SKU-42"}}],
-                        }
-                    },
+        card = (await asyncio.to_thread(_request, agent, AGENT_CARD_PATH)).json()
+        response = await asyncio.to_thread(
+            _request,
+            agent,
+            MESSAGE_PATH,
+            method="POST",
+            headers={"Authorization": SECRET},
+            body={
+                "jsonrpc": "2.0",
+                "id": "1",
+                "method": "SendMessage",
+                "params": {
+                    "message": {
+                        "contextId": "context-1",
+                        "parts": [{"text": "stock?"}, {"data": {"sku": "SKU-42"}}],
+                    }
                 },
-            )
-            missing = await client.get(f"{agent.url}/nope")
+            },
+        )
+        missing = await asyncio.to_thread(_request, agent, "/nope")
 
         call = agent.calls_since(0)[0]
 
@@ -114,13 +119,21 @@ async def test_serves_a_card_and_records_a_delegated_call() -> None:
 @pytest.mark.asyncio
 async def test_answers_unsupported_methods_and_rejects_malformed_requests() -> None:
     async with DownstreamAgent(DownstreamConfig()) as agent:
-        async with httpx.AsyncClient(trust_env=False) as client:
-            unsupported = await client.post(
-                f"{agent.url}{MESSAGE_PATH}",
-                json={"jsonrpc": "2.0", "id": "1", "method": "tasks/get", "params": {}},
-            )
-            malformed = await client.post(f"{agent.url}{MESSAGE_PATH}", content=b"{")
-            elsewhere = await client.post(f"{agent.url}/other", json={})
+        unsupported = await asyncio.to_thread(
+            _request,
+            agent,
+            MESSAGE_PATH,
+            method="POST",
+            body={"jsonrpc": "2.0", "id": "1", "method": "tasks/get", "params": {}},
+        )
+        malformed = await asyncio.to_thread(
+            _request,
+            agent,
+            MESSAGE_PATH,
+            method="POST",
+            content=b"{",
+        )
+        elsewhere = await asyncio.to_thread(_request, agent, "/other", method="POST", body={})
 
         calls = agent.calls_since(0)
 
@@ -331,11 +344,12 @@ async def test_uses_a_configured_public_url_and_bounds_recorded_calls(
 
     async with DownstreamAgent(config) as agent:
         assert agent.url == "http://127.0.0.1:8899"
-        card = json.loads(_request(agent, AGENT_CARD_PATH))
+        card = _request(agent, AGENT_CARD_PATH).json()
         for _ in range(2):
             _request(
                 agent,
                 MESSAGE_PATH,
+                method="POST",
                 body={
                     "jsonrpc": "2.0",
                     "id": "1",
@@ -355,11 +369,13 @@ async def test_rejects_an_oversized_downstream_request(monkeypatch: pytest.Monke
     monkeypatch.setattr(downstream_module, "MAX_DOWNSTREAM_BODY_BYTES", 1)
 
     async with DownstreamAgent(DownstreamConfig()) as agent:
-        async with httpx.AsyncClient(trust_env=False) as client:
-            response = await client.post(
-                f"{agent.url}{MESSAGE_PATH}",
-                json={"jsonrpc": "2.0", "id": "1", "method": "SendMessage"},
-            )
+        response = await asyncio.to_thread(
+            _request,
+            agent,
+            MESSAGE_PATH,
+            method="POST",
+            body={"jsonrpc": "2.0", "id": "1", "method": "SendMessage"},
+        )
         calls = agent.calls_since(0)
 
     assert response.status_code == 400
@@ -378,13 +394,29 @@ async def test_reports_a_stopped_agent() -> None:
         agent.recorded()
 
 
-def _request(agent: DownstreamAgent, path: str, body: dict[str, Any] | None = None) -> str:
-    host, port = agent._require_server().server_address[:2]
-    url = f"http://{host}:{port}{path}"
+def _request(
+    target: DownstreamAgent | str,
+    path: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+    content: bytes | None = None,
+) -> httpx.Response:
+    """Send a real loopback request without coupling server tests to an async HTTP backend."""
+    if isinstance(target, DownstreamAgent):
+        host, port = target._require_server().server_address[:2]
+        base_url = f"http://{host}:{port}"
+    else:
+        base_url = target
     with httpx.Client(trust_env=False) as client:
-        if body is None:
-            return client.get(url).text
-        return client.post(url, json=body).text
+        return client.request(
+            method,
+            f"{base_url}{path}",
+            headers=headers,
+            json=body,
+            content=content,
+        )
 
 
 def _payload(call: DownstreamCall) -> dict[str, Any]:
