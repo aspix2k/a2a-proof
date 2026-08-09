@@ -1,136 +1,88 @@
 # a2a-proof
 
 [![CI](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml/badge.svg)](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A599%25-brightgreen)](https://github.com/aspix2k/a2a-proof/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/aspix2k/a2a-proof)](https://github.com/aspix2k/a2a-proof/releases)
 [![PyPI](https://img.shields.io/pypi/v/a2a-proof)](https://pypi.org/project/a2a-proof/)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)](https://www.python.org/)
 
-Black-box contract tests for A2A agents.
+Black-box behavior contracts for deployed [A2A](https://a2a-protocol.org/) agents.
 
-`a2a-proof` discovers a deployed agent, sends real A2A requests, and checks its observable
-behavior. It needs no access to the agent's source code, framework, prompts, or model provider.
+`a2a-proof` discovers an Agent Card, sends real requests, and checks only observable behavior. It
+does not need the agent's source code, framework, prompts, or model provider.
 
-The official [A2A TCK](https://github.com/a2aproject/a2a-tck) checks protocol conformance,
-[A2A ITK](https://github.com/a2aproject/a2a-itk) checks interoperability between SDKs, and the
-[A2A Inspector](https://github.com/a2aproject/a2a-inspector) supports interactive debugging.
-`a2a-proof` adds repeatable contracts for the behavior of your deployed agent.
+## Status
 
-It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC. The SDK compatibility layer also supports
-AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC, including signed mandate-to-receipt payment flows.
+The project is alpha software. It targets A2A 1.0 over JSON-RPC, HTTP+JSON, and gRPC on Python
+3.11–3.14. An optional compatibility path covers AP2 v0.2.0 agents that expose A2A 0.3 JSON-RPC.
 
-## What you can prove
+Contracts can cover:
 
-| Risk | Contract |
-| --- | --- |
-| A prompt, model, or backend change alters an answer | Text, structured data, JSON Schema, and file integrity assertions |
-| An LLM succeeds only some of the time or gets slower | Repeated trials, statistically bounded pass rates, parallel runs, and p50/p95 latency |
-| A long-running task breaks after acceptance | State trajectories, stream resumption, cancellation, persistence, and push delivery |
-| Staging no longer behaves like production | Agent Card preflight and deployment diff |
-| A contract change needs review without a live agent | Recorded cassettes replayed offline |
-| Agent text leaks a secret or system prompt | Global invariants and bounded failure evidence |
-| An orchestrator stops calling its specialist, or forwards credentials to it | Delegation contracts against a recording downstream agent |
-| An agent produces an invalid payment proof | Signed AP2 mandate-chain and receipt verification |
+- text, structured data, files, task states, and latency;
+- repeated trials with pass-rate bounds and parallel execution;
+- Agent Card preflight, deployment diffs, and offline cassette replay;
+- push delivery, downstream delegation, and signed AP2 mandates and receipts.
+
+The official [A2A TCK](https://github.com/a2aproject/a2a-tck) remains the protocol-conformance
+suite. `a2a-proof` focuses on application behavior.
 
 ## Quick start
 
-With [uv](https://docs.astral.sh/uv/getting-started/installation/) installed, try a real loopback
-A2A exchange without an API key or external service:
+With [uv](https://docs.astral.sh/uv/getting-started/installation/) installed, run a deterministic
+loopback contract without credentials:
 
 ```console
 uvx a2a-proof demo
 uvx a2a-proof demo --fail
 ```
 
-The second command deliberately shows a contract failure and exits `1`.
-
-Point the runner at your agent:
+The second command intentionally fails and exits `1`. To create and run a contract against a
+deployed agent:
 
 ```console
 uvx a2a-proof init https://agent.example.com
+uvx a2a-proof check
+uvx a2a-proof run
 ```
 
-`init` reads the Agent Card and creates `a2a-proof.yaml`. Replace its smoke scenario with behavior
-your users depend on:
+`init` writes `a2a-proof.yaml` from the Agent Card. Replace its smoke scenario with behavior your
+users depend on before treating the result as a useful contract.
 
-```yaml
-version: 1
+## Validation
 
-agent:
-  url: https://agent.example.com
+`a2a-proof check [CONFIG]` validates a contract without contacting the agent. A run exits `0` when
+all selected scenarios pass, `1` when a contract fails, and `2` for configuration or execution
+errors.
 
-defaults:
-  trials: 5
-  pass_rate: 0.8
-
-scenarios:
-  - name: billing dispute routing
-    message: A customer says their card was charged twice for order 4815.
-    latency:
-      p95_seconds: 15
-    expect:
-      state: completed
-      data:
-        - path: /queue
-          equals: billing-disputes
-        - path: /priority
-          matches: "(?i)^high$"
-```
-
-```console
-$ uvx a2a-proof run
-┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━┓
-┃ Result ┃ Scenario                ┃ Trials ┃ Time ┃
-┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━┩
-│ PASS   │ billing dispute routing │    4/5 │ 3.2s │
-└────────┴─────────────────────────┴────────┴──────┘
-
-1 scenario passed in 3.2s
-```
-
-Run one scenario, save failure evidence, or compare the same contract against another deployment:
-
-```console
-uvx a2a-proof run --scenario "billing dispute routing"
-uvx a2a-proof run --format junit --output a2a-proof.xml --evidence evidence
-uvx a2a-proof diff --against https://candidate-agent.example.com
-uvx a2a-proof record --output cassette.json && uvx a2a-proof run --replay cassette.json
-```
+Repository checks and release instructions are in [CONTRIBUTING.md](CONTRIBUTING.md). CI enforces
+formatting, linting, type checks, schema freshness, workflow security, tests with at least 99%
+coverage, package validation, supported Python versions, and macOS/Windows compatibility.
 
 ## GitHub Actions
 
-After checking out the repository, one step runs its default contract as a CI check:
+After checkout, the composite action runs the repository's `a2a-proof.yaml` contract:
 
 ```yaml
 - uses: aspix2k/a2a-proof@v0.16.0
 ```
 
-Set `config` only when the contract is not `a2a-proof.yaml`.
-
-## Documentation
-
-- [Writing contracts](docs/contracts.md)
-- [Assertions](docs/assertions.md)
-- [Task lifecycle](docs/lifecycle.md)
-- [Push notifications](docs/push-notifications.md)
-- [Delegation contracts](docs/delegation.md)
-- [Recording and replay](docs/cassettes.md)
-- [AP2 contracts](docs/ap2.md)
-- [External agent showcases](docs/showcases.md)
-- [Running in development and CI](docs/operations.md)
-- [Configuration schema](schema/a2a-proof.schema.json)
-
-The schema provides completion and inline validation in YAML-aware editors. `init` links it
-automatically.
+See [Running in development and CI](docs/operations.md) for configuration and evidence handling.
 
 ## Safety
 
-Agent responses and file metadata are treated as untrusted input. Requests, response parts,
-regular expressions, embedded schemas, evidence, and local file access are bounded. Redirects,
-credential-bearing URLs, external schema references, and cross-origin interfaces are rejected by
-default. Remote file URLs are never fetched or written to reports. Requests recorded by the
-delegation agent stay in memory and are never written to reports or evidence.
+Agent responses and file metadata are treated as untrusted input. Requests, evidence, local file
+access, redirects, schemas, and regular expressions are bounded or validated. See
+[SECURITY.md](SECURITY.md) for the security model and private vulnerability reports.
 
-See [SECURITY.md](SECURITY.md) for private vulnerability reports.
+## Documentation
 
-Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).
+- [Write a contract](docs/contracts.md) and [choose assertions](docs/assertions.md)
+- [Run locally or in CI](docs/operations.md)
+- [Test task lifecycles](docs/lifecycle.md), [push delivery](docs/push-notifications.md), or
+  [delegation](docs/delegation.md)
+- [Record and replay agent responses](docs/cassettes.md)
+- [Verify AP2 mandates and receipts](docs/ap2.md)
+- [Run external-agent examples](docs/showcases.md)
+- [Browse the configuration schema](schema/a2a-proof.schema.json)
+- [Read the changelog](CHANGELOG.md), [security policy](SECURITY.md), or
+  [contribution guide](CONTRIBUTING.md)
+
+Licensed under the [MIT License](LICENSE).
